@@ -20,6 +20,7 @@ import {
   Sun,
   LogOut,
   Settings,
+  Bell,
 } from "lucide-react";
 
 interface CurrentUser {
@@ -254,6 +255,13 @@ export function Sidebar({
                 {currentUser.role}
               </div>
             </div>
+            <NavLink
+              to="/settings/notifications"
+              title="Notification Settings"
+              className="rounded-md p-1 text-sidebar-foreground/50 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            >
+              <Bell className="size-4" />
+            </NavLink>
             <NavLink
               to="/settings"
               title="Settings"

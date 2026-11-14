@@ -126,6 +126,22 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
         <span className="text-foreground">Settings</span>
       </nav>
 
+      {/* Settings Navigation Tabs */}
+      <div className="mb-6 flex gap-2 border-b border-border pb-3">
+        <Link
+          to="/settings"
+          className="rounded-md bg-muted px-3 py-1.5 text-sm font-medium text-foreground"
+        >
+          Profile
+        </Link>
+        <Link
+          to="/settings/notifications"
+          className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          Notifications
+        </Link>
+      </div>
+
       <div className="mb-8">
         <h1 className="text-3xl font-bold">Settings</h1>
         <p className="mt-1 text-muted-foreground">

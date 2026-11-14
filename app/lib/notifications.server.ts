@@ -2,12 +2,17 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
 import {
+  comments,
+  courses,
   emailOutbox,
+  lessons,
+  modules,
   notificationPreferences,
   notifications,
   NotificationType,
   OutboxStatus,
   UserRole,
+  users,
 } from "~/db/schema";
 import { triggerOutboxDrain } from "~/lib/outbox.server";
 
@@ -111,11 +116,13 @@ export type NotificationPayloadMap = {
 // ─── Metadata Registry ───
 
 export type NotificationCategory = "mandatory" | "optional";
+export type NotificationRole = UserRole | "team_admin";
 
 export interface NotificationTypeMeta<T extends NotificationType = NotificationType> {
   type: T;
   category: NotificationCategory;
-  eligibleRoles: UserRole[];
+  label: string;
+  eligibleRoles: NotificationRole[];
   defaultEmailEnabled: boolean;
   title: (payload: NotificationPayloadMap[T]) => string;
   deepLink: (payload: NotificationPayloadMap[T]) => string;
@@ -128,6 +135,7 @@ export const NOTIFICATION_REGISTRY: {
   [NotificationType.RefundRequestRaised]: {
     type: NotificationType.RefundRequestRaised,
     category: "mandatory",
+    label: "Refund request raised",
     eligibleRoles: [UserRole.Admin],
     defaultEmailEnabled: true,
     title: (p) => `Refund request raised for "${p.courseTitle}"`,
@@ -137,7 +145,8 @@ export const NOTIFICATION_REGISTRY: {
   [NotificationType.RefundDecided]: {
     type: NotificationType.RefundDecided,
     category: "mandatory",
-    eligibleRoles: [UserRole.Student],
+    label: "Refund request decided",
+    eligibleRoles: [UserRole.Student, "team_admin"],
     defaultEmailEnabled: true,
     title: (p) => `Your refund for "${p.courseTitle}" was ${p.decision}`,
     deepLink: (p) => (p.courseSlug ? `/courses/${p.courseSlug}` : "/dashboard"),
@@ -146,6 +155,7 @@ export const NOTIFICATION_REGISTRY: {
   [NotificationType.PurchaseConfirmed]: {
     type: NotificationType.PurchaseConfirmed,
     category: "mandatory",
+    label: "Purchase confirmed",
     eligibleRoles: [UserRole.Student],
     defaultEmailEnabled: true,
     title: (p) => `Purchase confirmed: "${p.courseTitle}"`,
@@ -156,6 +166,7 @@ export const NOTIFICATION_REGISTRY: {
   [NotificationType.EnrollmentEnded]: {
     type: NotificationType.EnrollmentEnded,
     category: "mandatory",
+    label: "Enrollment ended",
     eligibleRoles: [UserRole.Student],
     defaultEmailEnabled: true,
     title: (p) => `Your enrollment in "${p.courseTitle}" has ended`,
@@ -165,6 +176,7 @@ export const NOTIFICATION_REGISTRY: {
   [NotificationType.CourseArchived]: {
     type: NotificationType.CourseArchived,
     category: "mandatory",
+    label: "Course archived",
     eligibleRoles: [UserRole.Instructor],
     defaultEmailEnabled: true,
     title: (p) => `Your course "${p.courseTitle}" was archived by an admin`,
@@ -174,7 +186,8 @@ export const NOTIFICATION_REGISTRY: {
   [NotificationType.TeamLicencePurchased]: {
     type: NotificationType.TeamLicencePurchased,
     category: "optional",
-    eligibleRoles: [UserRole.Student],
+    label: "Team Licence purchased and seat codes",
+    eligibleRoles: ["team_admin"],
     defaultEmailEnabled: true,
     title: (p) =>
       `Team Licence purchased: ${p.seatCount} seats for "${p.courseTitle}"`,
@@ -184,7 +197,8 @@ export const NOTIFICATION_REGISTRY: {
   [NotificationType.SeatClaimed]: {
     type: NotificationType.SeatClaimed,
     category: "optional",
-    eligibleRoles: [UserRole.Student],
+    label: "Seat claimed by a team member",
+    eligibleRoles: ["team_admin"],
     defaultEmailEnabled: false,
     title: (p) => `Seat claimed on your Team Licence by ${p.studentEmail}`,
     deepLink: () => "/team",
@@ -193,19 +207,26 @@ export const NOTIFICATION_REGISTRY: {
   [NotificationType.InstructorReply]: {
     type: NotificationType.InstructorReply,
     category: "optional",
+    label: "Someone replies to your comment",
     eligibleRoles: [UserRole.Student],
     defaultEmailEnabled: false,
     title: (p) =>
       `${p.instructorName} replied to your comment in "${p.lessonTitle}"`,
-    deepLink: (p) =>
-      p.courseSlug && p.lessonId
-        ? `/courses/${p.courseSlug}/lessons/${p.lessonId}#comment-${p.commentId}`
-        : "/dashboard",
+    deepLink: (p) => {
+      if (p.courseSlug && p.lessonId && p.commentId) {
+        return `/courses/${p.courseSlug}/lessons/${p.lessonId}#comment-${p.commentId}`;
+      }
+      if (p.courseSlug) {
+        return `/courses/${p.courseSlug}`;
+      }
+      return "/dashboard";
+    },
     fallbackLink: "/dashboard",
   },
   [NotificationType.CoursePublished]: {
     type: NotificationType.CoursePublished,
     category: "optional",
+    label: "Course published",
     eligibleRoles: [UserRole.Instructor],
     defaultEmailEnabled: false,
     title: (p) => `Your course "${p.courseTitle}" was published`,
@@ -491,3 +512,184 @@ export function markAllAsRead(
     )
     .run();
 }
+
+// ─── Preferences ───
+
+export interface UserPreferenceView {
+  type: NotificationType;
+  label: string;
+  category: NotificationCategory;
+  mandatory: boolean;
+  emailEnabled: boolean;
+  defaultEmailEnabled: boolean;
+}
+
+export function getUserNotificationPreferences(
+  db: Queryable,
+  userId: number,
+  userRoles: (UserRole | "team_admin" | string)[]
+): UserPreferenceView[] {
+  const savedPrefs = db
+    .select({
+      type: notificationPreferences.type,
+      emailEnabled: notificationPreferences.emailEnabled,
+    })
+    .from(notificationPreferences)
+    .where(eq(notificationPreferences.userId, userId))
+    .all();
+
+  const prefMap = new Map<NotificationType, boolean>();
+  for (const row of savedPrefs) {
+    prefMap.set(row.type, row.emailEnabled);
+  }
+
+  const roleSet = new Set(userRoles);
+  const views: UserPreferenceView[] = [];
+
+  for (const meta of Object.values(NOTIFICATION_REGISTRY)) {
+    const isEligible = meta.eligibleRoles.some((r) => roleSet.has(r));
+    if (!isEligible) {
+      continue;
+    }
+
+    const isMandatory = meta.category === "mandatory";
+    let emailEnabled: boolean;
+
+    if (isMandatory) {
+      emailEnabled = true;
+    } else {
+      const saved = prefMap.get(meta.type);
+      emailEnabled = saved !== undefined ? saved : meta.defaultEmailEnabled;
+    }
+
+    views.push({
+      type: meta.type,
+      label: meta.label,
+      category: meta.category,
+      mandatory: isMandatory,
+      emailEnabled,
+      defaultEmailEnabled: meta.defaultEmailEnabled,
+    });
+  }
+
+  return views;
+}
+
+export function updateUserNotificationPreference(
+  db: Queryable,
+  userId: number,
+  type: NotificationType,
+  emailEnabled: boolean,
+  now: Date = new Date()
+): void {
+  const meta = NOTIFICATION_REGISTRY[type];
+  if (meta?.category === "mandatory") {
+    return;
+  }
+
+  db.insert(notificationPreferences)
+    .values({
+      userId,
+      type,
+      emailEnabled,
+      updatedAt: now.toISOString(),
+    })
+    .onConflictDoUpdate({
+      target: [notificationPreferences.userId, notificationPreferences.type],
+      set: {
+        emailEnabled,
+        updatedAt: now.toISOString(),
+      },
+    })
+    .run();
+}
+
+export function notifyOnInstructorReply(
+  tx: Queryable,
+  replyComment: {
+    id: number;
+    userId: number;
+    lessonId: number;
+    parentId: number | null;
+  }
+): number | null {
+  if (replyComment.parentId === null) {
+    return null;
+  }
+
+  const parentComment = tx
+    .select({
+      id: comments.id,
+      userId: comments.userId,
+    })
+    .from(comments)
+    .where(eq(comments.id, replyComment.parentId))
+    .get();
+
+  if (!parentComment) {
+    return null;
+  }
+
+  // Do not notify if replier is the parent comment author
+  if (replyComment.userId === parentComment.userId) {
+    return null;
+  }
+
+  const replier = tx
+    .select({
+      id: users.id,
+      name: users.name,
+      role: users.role,
+    })
+    .from(users)
+    .where(eq(users.id, replyComment.userId))
+    .get();
+
+  if (!replier) {
+    return null;
+  }
+
+  // Only notify if replier is an Instructor or Platform Admin
+  if (
+    replier.role !== UserRole.Instructor &&
+    replier.role !== UserRole.Admin
+  ) {
+    return null;
+  }
+
+  const lessonInfo = tx
+    .select({
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      courseId: courses.id,
+      courseTitle: courses.title,
+      courseSlug: courses.slug,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(courses, eq(modules.courseId, courses.id))
+    .where(eq(lessons.id, replyComment.lessonId))
+    .get();
+
+  if (!lessonInfo) {
+    return null;
+  }
+
+  return writeNotification(tx, {
+    recipientUserId: parentComment.userId,
+    type: NotificationType.InstructorReply,
+    payload: {
+      commentId: replyComment.id,
+      parentCommentId: parentComment.id,
+      lessonId: lessonInfo.lessonId,
+      lessonTitle: lessonInfo.lessonTitle,
+      courseId: lessonInfo.courseId,
+      courseTitle: lessonInfo.courseTitle,
+      courseSlug: lessonInfo.courseSlug,
+      instructorName: replier.name,
+    },
+    dedupeKey: `instructor-reply:${replyComment.id}`,
+  });
+}
+
+

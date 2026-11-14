@@ -29,6 +29,7 @@ import {
   UserRole,
 } from "~/db/schema";
 import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { notifyOnInstructorReply } from "~/lib/notifications.server";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import {
@@ -427,11 +428,17 @@ function createComment(
     }
   }
 
-  return db
+  const comment = db
     .insert(comments)
     .values({ userId, lessonId, parentId, body: trimmed })
     .returning()
     .get();
+
+  if (parentId !== null && comment) {
+    notifyOnInstructorReply(db, comment);
+  }
+
+  return comment;
 }
 
 function updateComment(commentId: number, userId: number, body: string) {

@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import {
+  comments,
   emailOutbox,
+  lessons,
+  modules,
   notificationPreferences,
   notifications,
   NotificationType,
@@ -18,16 +21,23 @@ import {
   listPaginatedNotifications,
   markAsRead,
   markAllAsRead,
+  getUserNotificationPreferences,
+  updateUserNotificationPreference,
+  notifyOnInstructorReply,
 } from "./notifications.server";
 
 describe("Notification Service", () => {
   let testDb: ReturnType<typeof createTestDb>;
   let user: { id: number; name: string; email: string };
+  let instructor: { id: number; name: string; email: string };
+  let course: { id: number; title: string; slug: string };
 
   beforeEach(() => {
     testDb = createTestDb();
     const base = seedBaseData(testDb);
     user = base.user;
+    instructor = base.instructor;
+    course = base.course;
   });
 
   it("writes a notification and increments unread count", () => {
@@ -495,6 +505,473 @@ describe("Notification Service", () => {
         .where(eq(emailOutbox.notificationId, idSeatEnabled!))
         .all();
       expect(seatEnabledOutbox).toHaveLength(1);
+    });
+  });
+
+  describe("Notification Preferences", () => {
+    it("returns default preferences filtered by user role", () => {
+      const studentPrefs = getUserNotificationPreferences(testDb, user.id, [
+        UserRole.Student,
+      ]);
+
+      const studentTypes = studentPrefs.map((p) => p.type);
+      expect(studentTypes).toContain(NotificationType.RefundDecided);
+      expect(studentTypes).toContain(NotificationType.PurchaseConfirmed);
+      expect(studentTypes).toContain(NotificationType.EnrollmentEnded);
+      expect(studentTypes).toContain(NotificationType.InstructorReply);
+
+      // Should not contain instructor or admin or team admin types
+      expect(studentTypes).not.toContain(NotificationType.RefundRequestRaised);
+      expect(studentTypes).not.toContain(NotificationType.CourseArchived);
+      expect(studentTypes).not.toContain(NotificationType.CoursePublished);
+      expect(studentTypes).not.toContain(NotificationType.TeamLicencePurchased);
+      expect(studentTypes).not.toContain(NotificationType.SeatClaimed);
+
+      // Check mandatory vs optional default email states
+      const refundDecided = studentPrefs.find(
+        (p) => p.type === NotificationType.RefundDecided
+      );
+      expect(refundDecided?.mandatory).toBe(true);
+      expect(refundDecided?.emailEnabled).toBe(true);
+
+      const instructorReply = studentPrefs.find(
+        (p) => p.type === NotificationType.InstructorReply
+      );
+      expect(instructorReply?.mandatory).toBe(false);
+      expect(instructorReply?.emailEnabled).toBe(false);
+      expect(instructorReply?.defaultEmailEnabled).toBe(false);
+      expect(instructorReply?.label).toBe("Someone replies to your comment");
+    });
+
+    it("returns union of eligible types for multi-role users", () => {
+      const multiPrefs = getUserNotificationPreferences(testDb, user.id, [
+        UserRole.Student,
+        "team_admin",
+      ]);
+
+      const types = multiPrefs.map((p) => p.type);
+      expect(types).toContain(NotificationType.InstructorReply);
+      expect(types).toContain(NotificationType.TeamLicencePurchased);
+      expect(types).toContain(NotificationType.SeatClaimed);
+      expect(types).toContain(NotificationType.RefundDecided);
+
+      const teamLicence = multiPrefs.find(
+        (p) => p.type === NotificationType.TeamLicencePurchased
+      );
+      expect(teamLicence?.mandatory).toBe(false);
+      expect(teamLicence?.emailEnabled).toBe(true); // default true for team licence
+      expect(teamLicence?.defaultEmailEnabled).toBe(true);
+    });
+
+    it("returns only instructor-eligible types for instructor role", () => {
+      const instructorPrefs = getUserNotificationPreferences(
+        testDb,
+        instructor.id,
+        [UserRole.Instructor]
+      );
+      const types = instructorPrefs.map((p) => p.type);
+      expect(types).toEqual([
+        NotificationType.CourseArchived,
+        NotificationType.CoursePublished,
+      ]);
+    });
+
+    it("returns only admin-eligible types for platform admin role", () => {
+      const adminPrefs = getUserNotificationPreferences(testDb, user.id, [
+        UserRole.Admin,
+      ]);
+      const types = adminPrefs.map((p) => p.type);
+      expect(types).toEqual([NotificationType.RefundRequestRaised]);
+    });
+
+    it("respects overrides saved in notification_preferences for optional types", () => {
+      // Toggle instructor_reply on
+      updateUserNotificationPreference(
+        testDb,
+        user.id,
+        NotificationType.InstructorReply,
+        true
+      );
+
+      const prefs = getUserNotificationPreferences(testDb, user.id, [
+        UserRole.Student,
+      ]);
+      const instructorReply = prefs.find(
+        (p) => p.type === NotificationType.InstructorReply
+      );
+      expect(instructorReply?.emailEnabled).toBe(true);
+
+      // Toggle instructor_reply back off
+      updateUserNotificationPreference(
+        testDb,
+        user.id,
+        NotificationType.InstructorReply,
+        false
+      );
+
+      const updatedPrefs = getUserNotificationPreferences(testDb, user.id, [
+        UserRole.Student,
+      ]);
+      const updatedReply = updatedPrefs.find(
+        (p) => p.type === NotificationType.InstructorReply
+      );
+      expect(updatedReply?.emailEnabled).toBe(false);
+    });
+
+    it("strictly ignores stale notification_preferences rows for mandatory types", () => {
+      // Manually insert a stale row attempting to disable email for a mandatory type
+      testDb
+        .insert(notificationPreferences)
+        .values({
+          userId: user.id,
+          type: NotificationType.RefundDecided,
+          emailEnabled: false,
+        })
+        .run();
+
+      const prefs = getUserNotificationPreferences(testDb, user.id, [
+        UserRole.Student,
+      ]);
+      const refundDecided = prefs.find(
+        (p) => p.type === NotificationType.RefundDecided
+      );
+      // Mandatory must always be emailEnabled: true
+      expect(refundDecided?.emailEnabled).toBe(true);
+      expect(refundDecided?.mandatory).toBe(true);
+
+      // Also verify writeNotification ignores the stale row and creates an outbox row
+      const notifId = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 1,
+          purchaseId: 1,
+          courseId: 1,
+          courseTitle: "Course",
+          courseSlug: "course",
+          decision: "approved",
+        },
+      });
+
+      const outbox = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .all();
+      expect(outbox).toHaveLength(1);
+    });
+
+    it("applies preference changes only to future notifications, not existing ones", () => {
+      // User has default (false) for seat claimed -> writes notification with no outbox row
+      const id1 = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.SeatClaimed,
+        payload: {
+          couponId: 10,
+          courseId: 1,
+          courseTitle: "Course",
+          courseSlug: "course",
+          studentName: "Student",
+          studentEmail: "student@example.com",
+        },
+      });
+
+      expect(
+        testDb
+          .select()
+          .from(emailOutbox)
+          .where(eq(emailOutbox.notificationId, id1!))
+          .all()
+      ).toHaveLength(0);
+
+      // Now user enables SeatClaimed
+      updateUserNotificationPreference(
+        testDb,
+        user.id,
+        NotificationType.SeatClaimed,
+        true
+      );
+
+      // Previous notification should still have NO outbox row
+      expect(
+        testDb
+          .select()
+          .from(emailOutbox)
+          .where(eq(emailOutbox.notificationId, id1!))
+          .all()
+      ).toHaveLength(0);
+
+      // Future notification DOES create an outbox row
+      const id2 = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.SeatClaimed,
+        payload: {
+          couponId: 11,
+          courseId: 1,
+          courseTitle: "Course",
+          courseSlug: "course",
+          studentName: "Student 2",
+          studentEmail: "student2@example.com",
+        },
+      });
+
+      expect(
+        testDb
+          .select()
+          .from(emailOutbox)
+          .where(eq(emailOutbox.notificationId, id2!))
+          .all()
+      ).toHaveLength(1);
+    });
+  });
+
+  describe("Instructor Reply Trigger", () => {
+    let lesson: { id: number; title: string };
+    let parentComment: { id: number; userId: number };
+
+    beforeEach(() => {
+      const mod = testDb
+        .insert(modules)
+        .values({
+          courseId: course.id,
+          title: "Module 1",
+          position: 1,
+        })
+        .returning()
+        .get();
+
+      lesson = testDb
+        .insert(lessons)
+        .values({
+          moduleId: mod.id,
+          title: "Lesson 1",
+          position: 1,
+        })
+        .returning()
+        .get();
+
+      parentComment = testDb
+        .insert(comments)
+        .values({
+          userId: user.id,
+          lessonId: lesson.id,
+          parentId: null,
+          body: "Student question?",
+        })
+        .returning()
+        .get();
+    });
+
+    it("notifies parent comment author in-app when instructor replies", () => {
+      const reply = testDb
+        .insert(comments)
+        .values({
+          userId: instructor.id,
+          lessonId: lesson.id,
+          parentId: parentComment.id,
+          body: "Instructor answer.",
+        })
+        .returning()
+        .get();
+
+      const notifId = notifyOnInstructorReply(testDb, reply);
+      expect(notifId).toBeTypeOf("number");
+
+      expect(getUnreadCount(testDb, user.id)).toBe(1);
+      const recent = listRecentNotifications(testDb, user.id);
+      expect(recent[0].type).toBe(NotificationType.InstructorReply);
+      expect(recent[0].title).toBe(
+        'Test Instructor replied to your comment in "Lesson 1"'
+      );
+      expect(recent[0].deepLink).toBe(
+        `/courses/test-course/lessons/${lesson.id}#comment-${reply.id}`
+      );
+
+      // Default email for instructor_reply is false, so outbox should be empty
+      const outbox = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .all();
+      expect(outbox).toHaveLength(0);
+    });
+
+    it("queues an outbox email when student has opted in to instructor reply emails", () => {
+      updateUserNotificationPreference(
+        testDb,
+        user.id,
+        NotificationType.InstructorReply,
+        true
+      );
+
+      const reply = testDb
+        .insert(comments)
+        .values({
+          userId: instructor.id,
+          lessonId: lesson.id,
+          parentId: parentComment.id,
+          body: "Instructor answer with email opt-in.",
+        })
+        .returning()
+        .get();
+
+      const notifId = notifyOnInstructorReply(testDb, reply);
+      expect(notifId).toBeTypeOf("number");
+
+      const outbox = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .all();
+      expect(outbox).toHaveLength(1);
+      expect(outbox[0].status).toBe(OutboxStatus.Pending);
+    });
+
+    it("notifies when a Platform Admin replies to a comment", () => {
+      const admin = testDb
+        .insert(users)
+        .values({
+          name: "Admin User",
+          email: "admin@example.com",
+          role: UserRole.Admin,
+        })
+        .returning()
+        .get();
+
+      const reply = testDb
+        .insert(comments)
+        .values({
+          userId: admin.id,
+          lessonId: lesson.id,
+          parentId: parentComment.id,
+          body: "Admin answer.",
+        })
+        .returning()
+        .get();
+
+      const notifId = notifyOnInstructorReply(testDb, reply);
+      expect(notifId).toBeTypeOf("number");
+
+      const recent = listRecentNotifications(testDb, user.id);
+      expect(recent[0].title).toBe(
+        'Admin User replied to your comment in "Lesson 1"'
+      );
+    });
+
+    it("does not notify when a student replies to another student (peer reply)", () => {
+      const peerStudent = testDb
+        .insert(users)
+        .values({
+          name: "Peer Student",
+          email: "peer@example.com",
+          role: UserRole.Student,
+        })
+        .returning()
+        .get();
+
+      const reply = testDb
+        .insert(comments)
+        .values({
+          userId: peerStudent.id,
+          lessonId: lesson.id,
+          parentId: parentComment.id,
+          body: "Peer student comment.",
+        })
+        .returning()
+        .get();
+
+      const notifId = notifyOnInstructorReply(testDb, reply);
+      expect(notifId).toBeNull();
+      expect(getUnreadCount(testDb, user.id)).toBe(0);
+    });
+
+    it("does not notify when instructor replies to their own comment", () => {
+      const instructorComment = testDb
+        .insert(comments)
+        .values({
+          userId: instructor.id,
+          lessonId: lesson.id,
+          parentId: null,
+          body: "Instructor's original note.",
+        })
+        .returning()
+        .get();
+
+      const reply = testDb
+        .insert(comments)
+        .values({
+          userId: instructor.id,
+          lessonId: lesson.id,
+          parentId: instructorComment.id,
+          body: "Instructor follow-up.",
+        })
+        .returning()
+        .get();
+
+      const notifId = notifyOnInstructorReply(testDb, reply);
+      expect(notifId).toBeNull();
+      expect(getUnreadCount(testDb, instructor.id)).toBe(0);
+    });
+
+    it("deduplicates multiple notification attempts for the same reply comment", () => {
+      const reply = testDb
+        .insert(comments)
+        .values({
+          userId: instructor.id,
+          lessonId: lesson.id,
+          parentId: parentComment.id,
+          body: "Single reply.",
+        })
+        .returning()
+        .get();
+
+      const id1 = notifyOnInstructorReply(testDb, reply);
+      expect(id1).toBeTypeOf("number");
+
+      const id2 = notifyOnInstructorReply(testDb, reply);
+      expect(id2).toBeNull();
+
+      expect(getUnreadCount(testDb, user.id)).toBe(1);
+    });
+
+    it("falls back to /courses/${courseSlug} or /dashboard if lessonId or slug are missing", () => {
+      const id1 = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.InstructorReply,
+        payload: {
+          commentId: 10,
+          parentCommentId: 1,
+          lessonId: 0,
+          lessonTitle: "Lesson",
+          courseId: 1,
+          courseTitle: "Course",
+          courseSlug: "test-course",
+          instructorName: "Instructor",
+        },
+      });
+      const notif1 = listRecentNotifications(testDb, user.id).find(
+        (n) => n.id === id1
+      );
+      expect(notif1?.deepLink).toBe("/courses/test-course");
+
+      const id2 = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.InstructorReply,
+        payload: {
+          commentId: 11,
+          parentCommentId: 1,
+          lessonId: 0,
+          lessonTitle: "Lesson",
+          courseId: 1,
+          courseTitle: "Course",
+          courseSlug: "",
+          instructorName: "Instructor",
+        },
+      });
+      const notif2 = listRecentNotifications(testDb, user.id).find(
+        (n) => n.id === id2
+      );
+      expect(notif2?.deepLink).toBe("/dashboard");
     });
   });
 });

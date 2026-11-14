@@ -115,7 +115,7 @@ export function NotificationBell({
           <div className="flex items-center justify-between border-b px-4 py-2.5">
             <span className="text-sm font-semibold">Notifications</span>
             <Link
-              to="/settings"
+              to="/settings/notifications"
               onClick={() => setOpen(false)}
               title="Notification settings"
               className="cursor-pointer rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"

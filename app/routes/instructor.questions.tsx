@@ -25,6 +25,7 @@ import {
 } from "~/db/schema";
 import { eq, ne, or, and, isNull, notExists, sql, desc } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
+import { notifyOnInstructorReply } from "~/lib/notifications.server";
 
 type QueuedQuestion = {
   id: number;
@@ -149,11 +150,17 @@ function createComment(
     }
   }
 
-  return db
+  const comment = db
     .insert(comments)
     .values({ userId, lessonId, parentId, body: trimmed })
     .returning()
     .get();
+
+  if (parentId !== null && comment) {
+    notifyOnInstructorReply(db, comment);
+  }
+
+  return comment;
 }
 
 // A question sitting this long without an answer gets called out visually.

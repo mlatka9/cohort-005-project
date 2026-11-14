@@ -14,7 +14,14 @@ import { getCurrentUserId } from "~/lib/session";
 import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { AlertTriangle, BookOpen, CheckCircle2, GraduationCap, PlayCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  Bell,
+  BookOpen,
+  CheckCircle2,
+  GraduationCap,
+  PlayCircle,
+} from "lucide-react";
 import { CourseImage } from "~/components/course-image";
 import { data, isRouteErrorResponse } from "react-router";
 
@@ -282,11 +289,19 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
         <span className="text-foreground">Dashboard</span>
       </nav>
 
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">My Dashboard</h1>
-        <p className="mt-1 text-muted-foreground">
-          Track your learning progress
-        </p>
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">My Dashboard</h1>
+          <p className="mt-1 text-muted-foreground">
+            Track your learning progress
+          </p>
+        </div>
+        <Link to="/settings/notifications">
+          <Button variant="outline" size="sm" className="gap-2">
+            <Bell className="size-4" />
+            Notification Settings
+          </Button>
+        </Link>
       </div>
 
       {totalCourses === 0 ? (
