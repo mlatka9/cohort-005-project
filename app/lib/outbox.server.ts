@@ -10,6 +10,7 @@ import {
   users,
 } from "~/db/schema";
 import { defaultTransport, type MailTransport } from "~/lib/mailer.server";
+import { purgeOldNotifications } from "~/lib/notifications.server";
 import { formatPrice } from "~/lib/utils";
 
 export type Db = BetterSQLite3Database<typeof schema>;
@@ -368,11 +369,21 @@ export async function drainOutbox(options?: DrainOptions): Promise<DrainResult> 
   return { sent, retried, failed };
 }
 
+export { purgeOldNotifications };
+
 export async function triggerOutboxDrain(options?: DrainOptions): Promise<void> {
   try {
     await drainOutbox(options);
   } catch (err) {
     console.error("Failed to drain outbox:", err);
+  }
+
+  try {
+    const db = options?.db ?? defaultDb;
+    const now = options?.now ?? new Date();
+    purgeOldNotifications({ db, now });
+  } catch (err) {
+    console.error("Failed to purge old notifications:", err);
   }
 }
 
