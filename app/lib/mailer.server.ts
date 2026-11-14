@@ -2,8 +2,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ─── Transactional email ───
-// Postmark delivers every email when POSTMARK_SERVER_TOKEN is set. Without a
-// token (local dev, tests) each message is written to .outbox/ as a JSON file
+// Resend delivers every email when RESEND_API_KEY is set. Without an API
+// key (local dev, tests) each message is written to .outbox/ as a JSON file
 // instead, so it can be read without sending anything.
 
 export type Email = {
@@ -16,30 +16,34 @@ export interface MailTransport {
   send(email: Email): Promise<void>;
 }
 
-const FROM_ADDRESS = "Cadence <hello@cadence.dev>";
+export const FROM_ADDRESS = "Cadence <hello@cadence.dev>";
 
-export function postmarkTransport(serverToken: string): MailTransport {
+export function resendTransport(apiKey: string): MailTransport {
   return {
     async send(email) {
-      const response = await fetch("https://api.postmarkapp.com/email", {
+      const response = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
-          "X-Postmark-Server-Token": serverToken,
+          Authorization: `Bearer ${apiKey}`,
+          "User-Agent": "cadence-app",
         },
         body: JSON.stringify({
-          From: FROM_ADDRESS,
-          To: email.to,
-          Subject: email.subject,
-          TextBody: email.body,
-          MessageStream: "outbound",
+          from: FROM_ADDRESS,
+          to: email.to,
+          subject: email.subject,
+          text: email.body,
         }),
       });
 
       if (!response.ok) {
+        let details = "";
+        try {
+          details = await response.text();
+        } catch {}
         throw new Error(
-          `Postmark rejected the email to ${email.to}: ${response.status}`
+          `Resend rejected the email to ${email.to}: ${response.status}${details ? ` ${details}` : ""}`
         );
       }
     },
@@ -59,9 +63,11 @@ export function outboxTransport(directory: string): MailTransport {
   };
 }
 
-function defaultTransport(): MailTransport {
-  const token = process.env.POSTMARK_SERVER_TOKEN;
-  return token ? postmarkTransport(token) : outboxTransport(".outbox");
+export function defaultTransport(): MailTransport {
+  const apiKey = process.env.RESEND_API_KEY;
+  return apiKey && apiKey.trim() !== ""
+    ? resendTransport(apiKey.trim())
+    : outboxTransport(".outbox");
 }
 
 export async function sendEmail(

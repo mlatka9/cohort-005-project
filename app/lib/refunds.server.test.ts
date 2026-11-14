@@ -15,7 +15,9 @@ import {
   raiseRefundRequest,
 } from "./refunds.server";
 import { getUnreadCount, listRecentNotifications } from "./notifications.server";
-import { NotificationType } from "~/db/schema";
+import { NotificationType, emailOutbox, OutboxStatus } from "~/db/schema";
+import { drainOutbox } from "./outbox.server";
+import type { Email, MailTransport } from "./mailer.server";
 
 type TestDb = ReturnType<typeof createTestDb>;
 
@@ -182,6 +184,18 @@ describe("raising a Refund Request", () => {
     expect(recent[0].type).toBe(NotificationType.RefundRequestRaised);
     expect(recent[0].title).toBe('Refund request raised for "Test Course"');
     expect(recent[0].deepLink).toBe("/admin/refunds");
+  });
+
+  it("creates email_outbox rows for Platform Admins when a Refund Request is raised", () => {
+    const purchase = buyForSelf(base.user.id);
+
+    const outboxBefore = db.select().from(emailOutbox).all().length;
+    const result = raiseRefundRequest(db, purchase.id, base.user.id, "Please refund.", NOW);
+    if (!result.ok) throw new Error(result.error);
+
+    const outboxAfter = db.select().from(emailOutbox).all();
+    expect(outboxAfter.length).toBe(outboxBefore + 1);
+    expect(outboxAfter[outboxAfter.length - 1].status).toBe(OutboxStatus.Pending);
   });
 
   it("refuses anyone but the buyer", () => {
@@ -400,6 +414,40 @@ describe("approving a Refund Request", () => {
     expect(recent[0].title).toBe('Your refund for "Test Course" was approved');
     expect(recent[0].deepLink).toBe("/courses/test-course");
   });
+
+  it("creates an email_outbox row for the buyer when approved and drains it", async () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    const outboxBefore = db.select().from(emailOutbox).all().length;
+    const result = approveRefundRequest(db, id, platformAdmin.id, "Approved note.", NOW);
+    expect(result.ok).toBe(true);
+
+    const outboxAfter = db.select().from(emailOutbox).all();
+    expect(outboxAfter.length).toBe(outboxBefore + 1);
+    const buyerOutbox = outboxAfter[outboxAfter.length - 1];
+    expect(buyerOutbox.status).toBe(OutboxStatus.Pending);
+
+    const sentEmails: Email[] = [];
+    const fakeTransport: MailTransport = {
+      async send(email) {
+        sentEmails.push(email);
+      },
+    };
+
+    const drainResult = await drainOutbox({
+      db,
+      transport: fakeTransport,
+      now: NOW,
+    });
+    expect(drainResult.sent).toBeGreaterThanOrEqual(1);
+
+    const buyerEmail = sentEmails.find((e) => e.to === base.user.email);
+    expect(buyerEmail).toBeDefined();
+    expect(buyerEmail?.subject).toBe("Refund approved — Test Course");
+    expect(buyerEmail?.body).toContain("We have approved your refund request");
+    expect(buyerEmail?.body).toContain("Approved note.");
+  });
 });
 
 describe("declining a Refund Request", () => {
@@ -461,6 +509,46 @@ describe("declining a Refund Request", () => {
     expect(recent[0].type).toBe(NotificationType.RefundDecided);
     expect(recent[0].title).toBe('Your refund for "Test Course" was declined');
     expect(recent[0].deepLink).toBe("/courses/test-course");
+  });
+
+  it("creates an email_outbox row for the buyer when declined and drains it", async () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    const outboxBefore = db.select().from(emailOutbox).all().length;
+    const result = declineRefundRequest(
+      db,
+      id,
+      platformAdmin.id,
+      "Finished entire course.",
+      NOW
+    );
+    expect(result.ok).toBe(true);
+
+    const outboxAfter = db.select().from(emailOutbox).all();
+    expect(outboxAfter.length).toBe(outboxBefore + 1);
+    const buyerOutbox = outboxAfter[outboxAfter.length - 1];
+    expect(buyerOutbox.status).toBe(OutboxStatus.Pending);
+
+    const sentEmails: Email[] = [];
+    const fakeTransport: MailTransport = {
+      async send(email) {
+        sentEmails.push(email);
+      },
+    };
+
+    const drainResult = await drainOutbox({
+      db,
+      transport: fakeTransport,
+      now: NOW,
+    });
+    expect(drainResult.sent).toBeGreaterThanOrEqual(1);
+
+    const buyerEmail = sentEmails.find((e) => e.to === base.user.email);
+    expect(buyerEmail).toBeDefined();
+    expect(buyerEmail?.subject).toBe("Refund declined — Test Course");
+    expect(buyerEmail?.body).toContain("decided not to refund it");
+    expect(buyerEmail?.body).toContain("Finished entire course.");
   });
 });
 

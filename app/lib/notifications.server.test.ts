@@ -1,6 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
-import { NotificationType, UserRole, users } from "~/db/schema";
+import {
+  emailOutbox,
+  notificationPreferences,
+  notifications,
+  NotificationType,
+  OutboxStatus,
+  UserRole,
+  users,
+} from "~/db/schema";
 import {
   writeNotification,
   writeNotifications,
@@ -305,5 +314,187 @@ describe("Notification Service", () => {
     const recent = listRecentNotifications(testDb, user.id);
     expect(recent[0].id).toBe(id);
     expect(recent[0].deepLink).toBe("/dashboard");
+  });
+
+  describe("Transactional Outbox Integration", () => {
+    it("creates an email_outbox row with status pending when writing a mandatory notification", () => {
+      const id = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 1,
+          purchaseId: 10,
+          courseId: 1,
+          courseTitle: "Test Course",
+          courseSlug: "test-course",
+          decision: "approved",
+          amountRefunded: 5000,
+        },
+        dedupeKey: "refund-decided:outbox-test-1",
+      });
+
+      expect(id).toBeTypeOf("number");
+
+      const outboxRows = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, id!))
+        .all();
+
+      expect(outboxRows).toHaveLength(1);
+      expect(outboxRows[0]).toMatchObject({
+        notificationId: id,
+        status: OutboxStatus.Pending,
+        attempts: 0,
+        nextAttemptAt: null,
+      });
+    });
+
+    it("does not create an email_outbox row when notification write is deduplicated", () => {
+      const id1 = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 2,
+          purchaseId: 20,
+          courseId: 1,
+          courseTitle: "Test Course",
+          courseSlug: "test-course",
+          decision: "approved",
+        },
+        dedupeKey: "refund-decided:outbox-dedupe-1",
+      });
+      expect(id1).toBeTypeOf("number");
+
+      const outboxCountBefore = testDb.select().from(emailOutbox).all().length;
+
+      // Duplicate write with same dedupeKey
+      const id2 = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 2,
+          purchaseId: 20,
+          courseId: 1,
+          courseTitle: "Test Course",
+          courseSlug: "test-course",
+          decision: "approved",
+        },
+        dedupeKey: "refund-decided:outbox-dedupe-1",
+      });
+      expect(id2).toBeNull();
+
+      const outboxCountAfter = testDb.select().from(emailOutbox).all().length;
+      expect(outboxCountAfter).toBe(outboxCountBefore);
+    });
+
+    it("rolls back email_outbox row if the transaction is rolled back", () => {
+      const totalOutboxBefore = testDb.select().from(emailOutbox).all().length;
+      const totalNotificationsBefore = testDb
+        .select()
+        .from(notifications)
+        .all().length;
+
+      expect(() => {
+        testDb.transaction((tx) => {
+          writeNotification(tx, {
+            recipientUserId: user.id,
+            type: NotificationType.RefundDecided,
+            payload: {
+              refundRequestId: 3,
+              purchaseId: 30,
+              courseId: 1,
+              courseTitle: "Test Course",
+              courseSlug: "test-course",
+              decision: "approved",
+            },
+            dedupeKey: "refund-decided:rollback-test",
+          });
+
+          // Simulate transaction failure
+          throw new Error("Simulated rollback");
+        });
+      }).toThrow("Simulated rollback");
+
+      const totalOutboxAfter = testDb.select().from(emailOutbox).all().length;
+      const totalNotificationsAfter = testDb
+        .select()
+        .from(notifications)
+        .all().length;
+
+      expect(totalOutboxAfter).toBe(totalOutboxBefore);
+      expect(totalNotificationsAfter).toBe(totalNotificationsBefore);
+    });
+
+    it("evaluates default email setting and preferences for optional notifications", () => {
+      // TeamLicencePurchased has defaultEmailEnabled: true
+      const idTeam = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.TeamLicencePurchased,
+        payload: {
+          purchaseId: 1,
+          courseId: 1,
+          courseTitle: "Team Course",
+          courseSlug: "team-course",
+          seatCount: 5,
+          couponCodes: ["C1", "C2"],
+        },
+      });
+      const teamOutbox = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, idTeam!))
+        .all();
+      expect(teamOutbox).toHaveLength(1);
+
+      // SeatClaimed has defaultEmailEnabled: false
+      const idSeat = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.SeatClaimed,
+        payload: {
+          couponId: 1,
+          courseId: 1,
+          courseTitle: "Team Course",
+          courseSlug: "team-course",
+          studentName: "Student",
+          studentEmail: "student@example.com",
+        },
+      });
+      const seatOutbox = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, idSeat!))
+        .all();
+      expect(seatOutbox).toHaveLength(0);
+
+      // User preference overrides: user enables SeatClaimed
+      testDb
+        .insert(notificationPreferences)
+        .values({
+          userId: user.id,
+          type: NotificationType.SeatClaimed,
+          emailEnabled: true,
+        })
+        .run();
+
+      const idSeatEnabled = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.SeatClaimed,
+        payload: {
+          couponId: 2,
+          courseId: 1,
+          courseTitle: "Team Course",
+          courseSlug: "team-course",
+          studentName: "Student 2",
+          studentEmail: "student2@example.com",
+        },
+      });
+      const seatEnabledOutbox = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, idSeatEnabled!))
+        .all();
+      expect(seatEnabledOutbox).toHaveLength(1);
+    });
   });
 });

@@ -2,10 +2,14 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
 import {
+  emailOutbox,
+  notificationPreferences,
   notifications,
   NotificationType,
+  OutboxStatus,
   UserRole,
 } from "~/db/schema";
+import { triggerOutboxDrain } from "~/lib/outbox.server";
 
 export type Db = BetterSQLite3Database<typeof schema>;
 export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -319,7 +323,51 @@ export function writeNotification<T extends NotificationType>(
     .returning({ id: notifications.id })
     .get();
 
-  return result ? result.id : null;
+  if (!result) {
+    return null;
+  }
+
+  const meta = NOTIFICATION_REGISTRY[params.type];
+  let shouldEmail = false;
+
+  if (meta) {
+    if (meta.category === "mandatory") {
+      shouldEmail = true;
+    } else if (meta.category === "optional") {
+      const pref = tx
+        .select({ emailEnabled: notificationPreferences.emailEnabled })
+        .from(notificationPreferences)
+        .where(
+          and(
+            eq(notificationPreferences.userId, params.recipientUserId),
+            eq(notificationPreferences.type, params.type)
+          )
+        )
+        .get();
+
+      shouldEmail =
+        pref !== undefined ? pref.emailEnabled : meta.defaultEmailEnabled;
+    }
+  }
+
+  if (shouldEmail) {
+    tx.insert(emailOutbox)
+      .values({
+        notificationId: result.id,
+        status: OutboxStatus.Pending,
+        attempts: 0,
+        createdAt: now,
+      })
+      .run();
+
+    if (typeof queueMicrotask === "function") {
+      queueMicrotask(() => {
+        triggerOutboxDrain().catch(() => {});
+      });
+    }
+  }
+
+  return result.id;
 }
 
 export function writeNotifications<T extends NotificationType>(
