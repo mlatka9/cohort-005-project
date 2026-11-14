@@ -693,6 +693,52 @@ export function notifyOnInstructorReply(
   });
 }
 
+export function notifyOnCourseArchived(
+  tx: Queryable,
+  course: {
+    id: number;
+    title: string;
+    slug: string;
+    instructorId: number;
+    updatedAt: string;
+  }
+): number | null {
+  return writeNotification(tx, {
+    recipientUserId: course.instructorId,
+    type: NotificationType.CourseArchived,
+    payload: {
+      courseId: course.id,
+      courseTitle: course.title,
+      courseSlug: course.slug,
+      archivedAt: course.updatedAt,
+    },
+    dedupeKey: `course-archived:${course.id}:${course.updatedAt}`,
+  });
+}
+
+export function notifyOnCoursePublished(
+  tx: Queryable,
+  course: {
+    id: number;
+    title: string;
+    slug: string;
+    instructorId: number;
+    updatedAt: string;
+  }
+): number | null {
+  return writeNotification(tx, {
+    recipientUserId: course.instructorId,
+    type: NotificationType.CoursePublished,
+    payload: {
+      courseId: course.id,
+      courseTitle: course.title,
+      courseSlug: course.slug,
+      publishedAt: course.updatedAt,
+    },
+    dedupeKey: `course-published:${course.id}:${course.updatedAt}`,
+  });
+}
+
 // ─── 90-Day Retention Purge ───
 
 export interface PurgeOldNotificationsOptions {

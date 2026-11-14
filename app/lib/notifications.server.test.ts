@@ -24,6 +24,8 @@ import {
   getUserNotificationPreferences,
   updateUserNotificationPreference,
   notifyOnInstructorReply,
+  notifyOnCourseArchived,
+  notifyOnCoursePublished,
   purgeOldNotifications,
 } from "./notifications.server";
 
@@ -973,6 +975,137 @@ describe("Notification Service", () => {
         (n) => n.id === id2
       );
       expect(notif2?.deepLink).toBe("/dashboard");
+    });
+  });
+
+  describe("Course Archived and Published Triggers", () => {
+    it("notifies course instructor when course is archived (mandatory, in-app + email)", () => {
+      const fixedDate = "2026-11-14T10:00:00.000Z";
+      const notifId = notifyOnCourseArchived(testDb, {
+        id: course.id,
+        title: course.title,
+        slug: course.slug,
+        instructorId: instructor.id,
+        updatedAt: fixedDate,
+      });
+
+      expect(notifId).toBeTypeOf("number");
+      expect(getUnreadCount(testDb, instructor.id)).toBe(1);
+
+      const recent = listRecentNotifications(testDb, instructor.id);
+      expect(recent[0].type).toBe(NotificationType.CourseArchived);
+      expect(recent[0].title).toBe(
+        `Your course "${course.title}" was archived by an admin`
+      );
+      expect(recent[0].deepLink).toBe(`/courses/${course.slug}`);
+      expect(recent[0].mandatory).toBe(true);
+
+      const outbox = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .all();
+      expect(outbox).toHaveLength(1);
+      expect(outbox[0].status).toBe(OutboxStatus.Pending);
+    });
+
+    it("deduplicates course archived notification with same course id and updatedAt", () => {
+      const fixedDate = "2026-11-14T10:00:00.000Z";
+      const id1 = notifyOnCourseArchived(testDb, {
+        id: course.id,
+        title: course.title,
+        slug: course.slug,
+        instructorId: instructor.id,
+        updatedAt: fixedDate,
+      });
+      expect(id1).toBeTypeOf("number");
+
+      const id2 = notifyOnCourseArchived(testDb, {
+        id: course.id,
+        title: course.title,
+        slug: course.slug,
+        instructorId: instructor.id,
+        updatedAt: fixedDate,
+      });
+      expect(id2).toBeNull();
+      expect(getUnreadCount(testDb, instructor.id)).toBe(1);
+    });
+
+    it("notifies course instructor when course is published (optional, default off)", () => {
+      const fixedDate = "2026-11-14T11:00:00.000Z";
+      const notifId = notifyOnCoursePublished(testDb, {
+        id: course.id,
+        title: course.title,
+        slug: course.slug,
+        instructorId: instructor.id,
+        updatedAt: fixedDate,
+      });
+
+      expect(notifId).toBeTypeOf("number");
+      expect(getUnreadCount(testDb, instructor.id)).toBe(1);
+
+      const recent = listRecentNotifications(testDb, instructor.id);
+      expect(recent[0].type).toBe(NotificationType.CoursePublished);
+      expect(recent[0].title).toBe(`Your course "${course.title}" was published`);
+      expect(recent[0].deepLink).toBe(`/courses/${course.slug}`);
+      expect(recent[0].mandatory).toBe(false);
+
+      // Default email is off
+      const outbox = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .all();
+      expect(outbox).toHaveLength(0);
+    });
+
+    it("queues an outbox email when instructor has opted in to course published emails", () => {
+      updateUserNotificationPreference(
+        testDb,
+        instructor.id,
+        NotificationType.CoursePublished,
+        true
+      );
+
+      const fixedDate = "2026-11-14T11:30:00.000Z";
+      const notifId = notifyOnCoursePublished(testDb, {
+        id: course.id,
+        title: course.title,
+        slug: course.slug,
+        instructorId: instructor.id,
+        updatedAt: fixedDate,
+      });
+
+      expect(notifId).toBeTypeOf("number");
+      const outbox = testDb
+        .select()
+        .from(emailOutbox)
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .all();
+      expect(outbox).toHaveLength(1);
+      expect(outbox[0].status).toBe(OutboxStatus.Pending);
+    });
+
+    it("deduplicates course published notification with same course id and updatedAt", () => {
+      const fixedDate = "2026-11-14T11:00:00.000Z";
+      const id1 = notifyOnCoursePublished(testDb, {
+        id: course.id,
+        title: course.title,
+        slug: course.slug,
+        instructorId: instructor.id,
+        updatedAt: fixedDate,
+      });
+      expect(id1).toBeTypeOf("number");
+
+      const id2 = notifyOnCoursePublished(testDb, {
+        id: course.id,
+        title: course.title,
+        slug: course.slug,
+        instructorId: instructor.id,
+        updatedAt: fixedDate,
+      });
+      expect(id2).toBeNull();
+      expect(getUnreadCount(testDb, instructor.id)).toBe(1);
     });
   });
 
