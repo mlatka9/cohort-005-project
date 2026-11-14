@@ -92,3 +92,9 @@ A Refund where the money couldn't be sent. The Refund Request stays approved, be
 **Watch Limit**:
 The amount of Watched time on a course past which a Student can no longer get a Refund, because they've had the course.
 _Avoid_: Watch cap, Viewing threshold
+
+**Mandatory Notification**:
+A notification type that is always delivered in-app and by email; the recipient can't switch it off.
+
+**Optional Notification**:
+A notification type that always appears in-app, but whose email the recipient can switch on or off.
