@@ -138,12 +138,26 @@ export function renderNotificationEmail(
 
     case NotificationType.TeamLicencePurchased: {
       const courseTitle = payload.courseTitle || "Course";
+      const couponCodes: string[] = Array.isArray(payload.couponCodes)
+        ? payload.couponCodes
+        : [];
+      const codesSection =
+        couponCodes.length > 0
+          ? [
+              "",
+              "Seat codes:",
+              ...couponCodes.map((code) => `• ${code}`),
+            ]
+          : [];
+
       return {
         subject: `Team Licence purchased — ${courseTitle}`,
         body: [
           `Hi ${recipient.name || "there"},`,
           "",
           `Your purchase of ${payload.seatCount ?? 1} seats for "${courseTitle}" is complete.`,
+          ...codesSection,
+          "",
           "You can distribute seats from your team dashboard: /team",
           "",
           "— The Cadence team",
@@ -153,12 +167,17 @@ export function renderNotificationEmail(
 
     case NotificationType.SeatClaimed: {
       const courseTitle = payload.courseTitle || "Course";
+      const studentDesc = payload.studentName
+        ? `${payload.studentName} (${payload.studentEmail})`
+        : payload.studentEmail || "a team member";
       return {
         subject: `Seat claimed — ${courseTitle}`,
         body: [
           `Hi ${recipient.name || "there"},`,
           "",
-          `A seat on your Team Licence for "${courseTitle}" has been claimed by ${payload.studentEmail || "a team member"}.`,
+          `A seat on your Team Licence for "${courseTitle}" has been claimed by ${studentDesc}.`,
+          "",
+          "You can view your team seats on your dashboard: /team",
           "",
           "— The Cadence team",
         ].join("\n"),
