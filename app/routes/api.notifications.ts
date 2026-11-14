@@ -12,7 +12,7 @@ import {
 const notificationActionSchema = z.discriminatedUnion("intent", [
   z.object({
     intent: z.literal("mark-read"),
-    notificationId: z.coerce.number().int(),
+    notificationId: z.coerce.number().int().positive(),
   }),
   z.object({
     intent: z.literal("mark-all-read"),
@@ -29,7 +29,7 @@ export async function action({ request }: Route.ActionArgs) {
   const parsed = parseFormData(formData, notificationActionSchema);
 
   if (!parsed.success) {
-    return data({ error: "Invalid action" }, { status: 400 });
+    throw data({ error: "Invalid action" }, { status: 400 });
   }
 
   if (parsed.data.intent === "mark-read") {
@@ -42,5 +42,5 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ success: true });
   }
 
-  return data({ error: "Unknown intent" }, { status: 400 });
+  throw data({ error: "Unknown intent" }, { status: 400 });
 }

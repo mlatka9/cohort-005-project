@@ -21,7 +21,7 @@ const pageSchema = z.coerce.number().int().min(1).catch(1);
 const notificationPageActionSchema = z.discriminatedUnion("intent", [
   z.object({
     intent: z.literal("mark-read"),
-    notificationId: z.coerce.number().int(),
+    notificationId: z.coerce.number().int().positive(),
   }),
   z.object({
     intent: z.literal("mark-all-read"),
@@ -35,12 +35,13 @@ export function meta() {
   ];
 }
 
-export async function loader({ request, url }: Route.LoaderArgs) {
+export async function loader({ request }: Route.LoaderArgs) {
   const currentUserId = await getCurrentUserId(request);
   if (!currentUserId) {
     throw data("Please select a user from the DevUI panel.", { status: 401 });
   }
 
+  const url = new URL(request.url);
   const page = pageSchema.parse(url.searchParams.get("page"));
   const perPage = 15;
 
@@ -63,7 +64,7 @@ export async function action({ request }: Route.ActionArgs) {
   const parsed = parseFormData(formData, notificationPageActionSchema);
 
   if (!parsed.success) {
-    return data({ error: "Invalid action" }, { status: 400 });
+    throw data({ error: "Invalid action" }, { status: 400 });
   }
 
   if (parsed.data.intent === "mark-read") {

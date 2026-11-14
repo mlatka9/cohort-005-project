@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useFetcher, data, isRouteErrorResponse } from "react-router";
 import { toast } from "sonner";
 import { eq, and } from "drizzle-orm";
+import { z } from "zod";
 import type { Route } from "./+types/settings.notifications";
 import { db } from "~/db";
 import {
@@ -21,6 +22,17 @@ import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { AlertTriangle, Bell } from "lucide-react";
 import { cn } from "~/lib/utils";
+import { parseFormData } from "~/lib/validation";
+
+const updatePreferenceSchema = z.object({
+  type: z.nativeEnum(NotificationType, {
+    errorMap: () => ({ message: "Invalid notification type" }),
+  }),
+  emailEnabled: z.preprocess(
+    (val) => val === "true" || val === true,
+    z.boolean()
+  ),
+});
 
 export function meta() {
   return [
@@ -90,16 +102,27 @@ export async function action({ request }: Route.ActionArgs) {
   }
 
   const formData = await request.formData();
-  const type = formData.get("type") as NotificationType;
-  const emailEnabled = formData.get("emailEnabled") === "true";
+  const parsed = parseFormData(formData, updatePreferenceSchema);
 
-  if (!type || !Object.values(NotificationType).includes(type)) {
-    return data({ error: "Invalid notification type" }, { status: 400 });
+  if (!parsed.success) {
+    throw data(
+      { error: parsed.errors.type || "Invalid notification type" },
+      { status: 400 }
+    );
   }
 
-  updateUserNotificationPreference(db, currentUserId, type, emailEnabled);
+  updateUserNotificationPreference(
+    db,
+    currentUserId,
+    parsed.data.type,
+    parsed.data.emailEnabled
+  );
 
-  return { success: true, type, emailEnabled };
+  return {
+    success: true,
+    type: parsed.data.type,
+    emailEnabled: parsed.data.emailEnabled,
+  };
 }
 
 function PreferenceRow({

@@ -64,27 +64,12 @@ export interface CreateTeamPurchaseParams {
 
 export function createTeamPurchase(
   db: Db,
-  paramsOrUserId: CreateTeamPurchaseParams | number,
-  courseId?: number,
-  amountPaid?: number,
-  country?: string | null,
-  quantity?: number
+  params: CreateTeamPurchaseParams
 ): {
   purchase: typeof purchases.$inferSelect;
   team: typeof teams.$inferSelect;
   coupons: (typeof coupons.$inferSelect)[];
 } {
-  const params: CreateTeamPurchaseParams =
-    typeof paramsOrUserId === "number"
-      ? {
-          userId: paramsOrUserId,
-          courseId: courseId!,
-          amountPaid: amountPaid!,
-          country: country ?? null,
-          quantity: quantity!,
-        }
-      : paramsOrUserId;
-
   return db.transaction((tx) => {
     const course = tx
       .select()
@@ -154,19 +139,8 @@ export type RedeemResult =
 
 export function redeemCoupon(
   db: Db,
-  paramsOrCode: RedeemCouponParams | string,
-  userId?: number,
-  userCountry?: string | null
+  params: RedeemCouponParams
 ): RedeemResult {
-  const params: RedeemCouponParams =
-    typeof paramsOrCode === "string"
-      ? {
-          code: paramsOrCode,
-          userId: userId!,
-          userCountry: userCountry ?? null,
-        }
-      : paramsOrCode;
-
   return db.transaction((tx): RedeemResult => {
     const coupon = tx
       .select()

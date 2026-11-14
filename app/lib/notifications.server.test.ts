@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import {
   comments,
+  courses,
   emailOutbox,
   lessons,
   modules,
@@ -326,6 +327,129 @@ describe("Notification Service", () => {
 
     const recent = listRecentNotifications(testDb, user.id);
     expect(recent[0].id).toBe(id);
+    expect(recent[0].deepLink).toBe("/dashboard");
+  });
+
+  it("falls back to /dashboard when the course has been deleted from the database (User Story 24)", () => {
+    writeNotification(testDb, {
+      recipientUserId: user.id,
+      type: NotificationType.RefundDecided,
+      payload: {
+        refundRequestId: 1,
+        purchaseId: 10,
+        courseId: course.id,
+        courseTitle: course.title,
+        courseSlug: course.slug,
+        decision: "approved",
+      },
+      dedupeKey: "refund-decided:deleted-course-test",
+    });
+
+    // Course exists: deepLink is to the course
+    let recent = listRecentNotifications(testDb, user.id);
+    expect(recent[0].deepLink).toBe(`/courses/${course.slug}`);
+
+    // Delete course from database
+    testDb.delete(courses).where(eq(courses.id, course.id)).run();
+
+    // Now deepLink should fall back to /dashboard
+    recent = listRecentNotifications(testDb, user.id);
+    expect(recent[0].deepLink).toBe("/dashboard");
+  });
+
+  it("updates deepLink to new slug when course has been renamed (User Story 25)", () => {
+    writeNotification(testDb, {
+      recipientUserId: user.id,
+      type: NotificationType.RefundDecided,
+      payload: {
+        refundRequestId: 1,
+        purchaseId: 10,
+        courseId: course.id,
+        courseTitle: course.title,
+        courseSlug: course.slug,
+        decision: "approved",
+      },
+      dedupeKey: "refund-decided:renamed-course-test",
+    });
+
+    // Rename the course
+    testDb
+      .update(courses)
+      .set({ slug: "renamed-advanced-course" })
+      .where(eq(courses.id, course.id))
+      .run();
+
+    const recent = listRecentNotifications(testDb, user.id);
+    expect(recent[0].deepLink).toBe("/courses/renamed-advanced-course");
+  });
+
+  it("falls back to /dashboard for instructor reply when comment has been deleted (User Story 24)", () => {
+    const mod = testDb
+      .insert(modules)
+      .values({ courseId: course.id, title: "Module 1", position: 1 })
+      .returning()
+      .get();
+    const les = testDb
+      .insert(lessons)
+      .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+      .returning()
+      .get();
+    const comment = testDb
+      .insert(comments)
+      .values({ lessonId: les.id, userId: user.id, body: "My question" })
+      .returning()
+      .get();
+
+    writeNotification(testDb, {
+      recipientUserId: user.id,
+      type: NotificationType.InstructorReply,
+      payload: {
+        commentId: comment.id,
+        parentCommentId: comment.id,
+        lessonId: les.id,
+        lessonTitle: les.title,
+        courseId: course.id,
+        courseTitle: course.title,
+        courseSlug: course.slug,
+        instructorName: "Instructor",
+      },
+      dedupeKey: `instructor-reply:${comment.id}`,
+    });
+
+    let recent = listRecentNotifications(testDb, user.id);
+    expect(recent[0].deepLink).toBe(
+      `/courses/${course.slug}/lessons/${les.id}#comment-${comment.id}`
+    );
+
+    // Soft-delete the comment
+    testDb
+      .update(comments)
+      .set({ deletedAt: new Date().toISOString() })
+      .where(eq(comments.id, comment.id))
+      .run();
+
+    recent = listRecentNotifications(testDb, user.id);
+    expect(recent[0].deepLink).toBe("/dashboard");
+  });
+
+  it("falls back to /dashboard for instructor reply when lesson has been deleted (User Story 24)", () => {
+    writeNotification(testDb, {
+      recipientUserId: user.id,
+      type: NotificationType.InstructorReply,
+      payload: {
+        commentId: 12345,
+        parentCommentId: 1,
+        lessonId: 99999,
+        lessonTitle: "Deleted Lesson",
+        courseId: course.id,
+        courseTitle: course.title,
+        courseSlug: course.slug,
+        instructorName: "Instructor",
+      },
+      dedupeKey: "instructor-reply:deleted-lesson-test",
+    });
+
+    const recent = listRecentNotifications(testDb, user.id);
     expect(recent[0].deepLink).toBe("/dashboard");
   });
 

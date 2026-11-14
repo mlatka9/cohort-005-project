@@ -38,9 +38,28 @@ export function calculateBackoff(attempts: number, now: Date = new Date()): stri
   return new Date(now.getTime() + delayMs).toISOString();
 }
 
+export interface NotificationEmailPayload {
+  courseTitle?: string;
+  courseSlug?: string;
+  decision?: string;
+  decisionNote?: string | null;
+  amountRefunded?: number;
+  buyerName?: string;
+  amountPaid?: number;
+  seatCount?: number;
+  couponCodes?: string[];
+  studentName?: string;
+  studentEmail?: string;
+  lessonTitle?: string;
+  lessonId?: number;
+  commentId?: number;
+  instructorName?: string;
+  [key: string]: unknown;
+}
+
 export function renderNotificationEmail(
   type: NotificationType,
-  payload: any,
+  payload: NotificationEmailPayload,
   recipient: { name: string; email: string }
 ): { subject: string; body: string } {
   switch (type) {
@@ -322,9 +341,9 @@ export async function drainOutbox(options?: DrainOptions): Promise<DrainResult> 
       continue;
     }
 
-    let payload: any = {};
+    let payload: NotificationEmailPayload = {};
     try {
-      payload = JSON.parse(notif.payload);
+      payload = JSON.parse(notif.payload) as NotificationEmailPayload;
     } catch {
       payload = {};
     }

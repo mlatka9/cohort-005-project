@@ -266,34 +266,246 @@ export function formatRelativeTime(date: Date, now: Date = new Date()): string {
   return `${diffMonths}mo`;
 }
 
+function renderNotificationTitle(
+  type: NotificationType,
+  payload: Record<string, unknown>
+): string {
+  try {
+    switch (type) {
+      case NotificationType.RefundRequestRaised:
+        return NOTIFICATION_REGISTRY[NotificationType.RefundRequestRaised].title(
+          payload as unknown as RefundRequestRaisedPayload
+        );
+      case NotificationType.RefundDecided:
+        return NOTIFICATION_REGISTRY[NotificationType.RefundDecided].title(
+          payload as unknown as RefundDecidedPayload
+        );
+      case NotificationType.PurchaseConfirmed:
+        return NOTIFICATION_REGISTRY[NotificationType.PurchaseConfirmed].title(
+          payload as unknown as PurchaseConfirmedPayload
+        );
+      case NotificationType.EnrollmentEnded:
+        return NOTIFICATION_REGISTRY[NotificationType.EnrollmentEnded].title(
+          payload as unknown as EnrollmentEndedPayload
+        );
+      case NotificationType.CourseArchived:
+        return NOTIFICATION_REGISTRY[NotificationType.CourseArchived].title(
+          payload as unknown as CourseArchivedPayload
+        );
+      case NotificationType.TeamLicencePurchased:
+        return NOTIFICATION_REGISTRY[NotificationType.TeamLicencePurchased].title(
+          payload as unknown as TeamLicencePurchasedPayload
+        );
+      case NotificationType.SeatClaimed:
+        return NOTIFICATION_REGISTRY[NotificationType.SeatClaimed].title(
+          payload as unknown as SeatClaimedPayload
+        );
+      case NotificationType.InstructorReply:
+        return NOTIFICATION_REGISTRY[NotificationType.InstructorReply].title(
+          payload as unknown as InstructorReplyPayload
+        );
+      case NotificationType.CoursePublished:
+        return NOTIFICATION_REGISTRY[NotificationType.CoursePublished].title(
+          payload as unknown as CoursePublishedPayload
+        );
+      default:
+        return "Notification";
+    }
+  } catch {
+    return "Notification";
+  }
+}
+
+function resolveNotificationTarget(
+  type: NotificationType,
+  payload: Record<string, unknown>,
+  db?: Queryable
+): string {
+  const meta = NOTIFICATION_REGISTRY[type];
+  const fallback = meta?.fallbackLink ?? "/dashboard";
+
+  try {
+    switch (type) {
+      case NotificationType.RefundRequestRaised:
+        return "/admin/refunds";
+
+      case NotificationType.TeamLicencePurchased:
+      case NotificationType.SeatClaimed:
+        return "/team";
+
+      case NotificationType.RefundDecided:
+      case NotificationType.EnrollmentEnded:
+      case NotificationType.CourseArchived:
+      case NotificationType.CoursePublished: {
+        const courseId =
+          typeof payload.courseId === "number" ? payload.courseId : undefined;
+        const courseSlug =
+          typeof payload.courseSlug === "string" &&
+          payload.courseSlug.trim().length > 0
+            ? payload.courseSlug.trim()
+            : undefined;
+
+        if (!courseSlug) {
+          return fallback;
+        }
+
+        if (!db) {
+          return `/courses/${courseSlug}`;
+        }
+
+        const course =
+          courseId !== undefined
+            ? db
+                .select({ id: courses.id, slug: courses.slug })
+                .from(courses)
+                .where(eq(courses.id, courseId))
+                .get()
+            : db
+                .select({ id: courses.id, slug: courses.slug })
+                .from(courses)
+                .where(eq(courses.slug, courseSlug))
+                .get();
+
+        if (!course) {
+          return fallback;
+        }
+
+        return `/courses/${course.slug}`;
+      }
+
+      case NotificationType.PurchaseConfirmed: {
+        const courseId =
+          typeof payload.courseId === "number" ? payload.courseId : undefined;
+        const courseSlug =
+          typeof payload.courseSlug === "string" &&
+          payload.courseSlug.trim().length > 0
+            ? payload.courseSlug.trim()
+            : undefined;
+
+        if (!courseSlug) {
+          return fallback;
+        }
+
+        if (!db) {
+          return `/courses/${courseSlug}/welcome`;
+        }
+
+        const course =
+          courseId !== undefined
+            ? db
+                .select({ id: courses.id, slug: courses.slug })
+                .from(courses)
+                .where(eq(courses.id, courseId))
+                .get()
+            : db
+                .select({ id: courses.id, slug: courses.slug })
+                .from(courses)
+                .where(eq(courses.slug, courseSlug))
+                .get();
+
+        if (!course) {
+          return fallback;
+        }
+
+        return `/courses/${course.slug}/welcome`;
+      }
+
+      case NotificationType.InstructorReply: {
+        const courseId =
+          typeof payload.courseId === "number" ? payload.courseId : undefined;
+        const courseSlug =
+          typeof payload.courseSlug === "string" &&
+          payload.courseSlug.trim().length > 0
+            ? payload.courseSlug.trim()
+            : undefined;
+        const lessonId =
+          typeof payload.lessonId === "number" && payload.lessonId > 0
+            ? payload.lessonId
+            : undefined;
+        const commentId =
+          typeof payload.commentId === "number" && payload.commentId > 0
+            ? payload.commentId
+            : undefined;
+
+        if (!courseSlug) {
+          return fallback;
+        }
+
+        if (!db) {
+          if (lessonId && commentId) {
+            return `/courses/${courseSlug}/lessons/${lessonId}#comment-${commentId}`;
+          }
+          return `/courses/${courseSlug}`;
+        }
+
+        const course =
+          courseId !== undefined
+            ? db
+                .select({ id: courses.id, slug: courses.slug })
+                .from(courses)
+                .where(eq(courses.id, courseId))
+                .get()
+            : db
+                .select({ id: courses.id, slug: courses.slug })
+                .from(courses)
+                .where(eq(courses.slug, courseSlug))
+                .get();
+
+        if (!course) {
+          return fallback;
+        }
+
+        if (lessonId && commentId) {
+          const lesson = db
+            .select({ id: lessons.id })
+            .from(lessons)
+            .where(eq(lessons.id, lessonId))
+            .get();
+
+          if (!lesson) {
+            return fallback;
+          }
+
+          const comment = db
+            .select({ id: comments.id, deletedAt: comments.deletedAt })
+            .from(comments)
+            .where(eq(comments.id, commentId))
+            .get();
+
+          if (!comment || comment.deletedAt !== null) {
+            return fallback;
+          }
+
+          return `/courses/${course.slug}/lessons/${lessonId}#comment-${commentId}`;
+        }
+
+        return `/courses/${course.slug}`;
+      }
+
+      default: {
+        return fallback;
+      }
+    }
+  } catch {
+    return fallback;
+  }
+}
+
 export function formatNotification(
   row: typeof notifications.$inferSelect,
-  now: Date = new Date()
+  now: Date = new Date(),
+  db?: Queryable
 ): FormattedNotification {
   const meta = NOTIFICATION_REGISTRY[row.type];
-  let payload: any = {};
+  let payload: Record<string, unknown> = {};
   try {
-    payload = JSON.parse(row.payload);
+    payload = JSON.parse(row.payload) as Record<string, unknown>;
   } catch {
     payload = {};
   }
 
-  let title = "Notification";
-  let deepLink = meta?.fallbackLink ?? "/dashboard";
-
-  if (meta) {
-    try {
-      title = meta.title(payload);
-    } catch {
-      title = "Notification";
-    }
-
-    try {
-      deepLink = meta.deepLink(payload);
-    } catch {
-      deepLink = meta.fallbackLink;
-    }
-  }
+  const title = renderNotificationTitle(row.type, payload);
+  const deepLink = resolveNotificationTarget(row.type, payload, db);
 
   const createdAtDate = new Date(row.createdAt);
   const isRead = row.readAt !== null;
@@ -435,7 +647,7 @@ export function listRecentNotifications(
     .limit(limit)
     .all();
 
-  return rows.map((row) => formatNotification(row, now));
+  return rows.map((row) => formatNotification(row, now, db));
 }
 
 export function listPaginatedNotifications(
@@ -472,7 +684,7 @@ export function listPaginatedNotifications(
     .all();
 
   return {
-    notifications: rows.map((row) => formatNotification(row, now)),
+    notifications: rows.map((row) => formatNotification(row, now, db)),
     total,
     totalPages,
     page,

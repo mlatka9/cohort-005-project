@@ -45,6 +45,15 @@ export function NotificationBell({
     return () => clearInterval(timer);
   }, [pollFetcher]);
 
+  // Revalidate on window focus
+  useEffect(() => {
+    function handleFocus() {
+      pollFetcher.load("/api/notifications/poll");
+    }
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [pollFetcher]);
+
   // Handle poll response
   useEffect(() => {
     if (pollFetcher.data) {

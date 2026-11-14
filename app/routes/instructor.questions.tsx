@@ -252,7 +252,7 @@ function QuestionCard({ question }: { question: Question }) {
   }, [fetcher.state, fetcher.data]);
 
   return (
-    <Card>
+    <Card id={`comment-${question.id}`}>
       <CardContent className="p-6">
         <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <span className="font-medium text-foreground">

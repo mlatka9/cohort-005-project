@@ -20,6 +20,20 @@ export interface UpdateCourseStatusResult {
   notificationId: number | null;
 }
 
+function dispatchCourseStatusNotification(
+  tx: Queryable,
+  status: CourseStatus,
+  course: typeof courses.$inferSelect
+): number | null {
+  if (status === CourseStatus.Archived) {
+    return notifyOnCourseArchived(tx, course);
+  }
+  if (status === CourseStatus.Published) {
+    return notifyOnCoursePublished(tx, course);
+  }
+  return null;
+}
+
 export function updateCourseStatus(
   db: Queryable,
   courseId: number,
@@ -39,15 +53,9 @@ export function updateCourseStatus(
 
     // Double submit / redundant status update: do not generate new updatedAt timestamp
     if (existingCourse.status === status) {
-      let notificationId: number | null = null;
-      if (status === CourseStatus.Archived) {
-        notificationId = notifyOnCourseArchived(tx, existingCourse);
-      } else if (status === CourseStatus.Published) {
-        notificationId = notifyOnCoursePublished(tx, existingCourse);
-      }
       return {
         course: existingCourse,
-        notificationId,
+        notificationId: dispatchCourseStatusNotification(tx, status, existingCourse),
       };
     }
 
@@ -60,16 +68,9 @@ export function updateCourseStatus(
       .returning()
       .get();
 
-    let notificationId: number | null = null;
-    if (status === CourseStatus.Archived) {
-      notificationId = notifyOnCourseArchived(tx, updatedCourse);
-    } else if (status === CourseStatus.Published) {
-      notificationId = notifyOnCoursePublished(tx, updatedCourse);
-    }
-
     return {
       course: updatedCourse,
-      notificationId,
+      notificationId: dispatchCourseStatusNotification(tx, status, updatedCourse),
     };
   };
 
