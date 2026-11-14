@@ -114,7 +114,7 @@ export function renderNotificationEmail(
         body: [
           `Hi ${recipient.name || "there"},`,
           "",
-          `Your enrollment in "${courseTitle}" has ended.`,
+          `Your enrollment in "${courseTitle}" has ended because your refund was approved.`,
           "",
           "— The Cadence team",
         ].join("\n"),

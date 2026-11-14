@@ -653,6 +653,12 @@ export function approveRefundRequest(
     const { purchase } = found;
     const seats = getSeats(tx, purchase.id);
 
+    const course = tx
+      .select()
+      .from(courses)
+      .where(eq(courses.id, purchase.courseId))
+      .get();
+
     if (kindOf(seats) === "team_licence") {
       if (seats.some(isClaimed)) {
         return {
@@ -691,6 +697,18 @@ export function approveRefundRequest(
             )
           )
           .run();
+
+        writeNotification(tx, {
+          recipientUserId: purchase.userId,
+          type: NotificationType.EnrollmentEnded,
+          payload: {
+            purchaseId: purchase.id,
+            courseId: purchase.courseId,
+            courseTitle: course?.title ?? "Course",
+            courseSlug: course?.slug ?? "",
+          },
+          dedupeKey: `enrollment-ended:${refundRequestId}`,
+        });
       }
     }
 
@@ -704,12 +722,6 @@ export function approveRefundRequest(
       })
       .where(eq(refunds.id, refundRequestId))
       .run();
-
-    const course = tx
-      .select()
-      .from(courses)
-      .where(eq(courses.id, purchase.courseId))
-      .get();
 
     writeNotification(tx, {
       recipientUserId: purchase.userId,
