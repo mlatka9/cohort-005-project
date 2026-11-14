@@ -13,6 +13,7 @@ import {
   RefundStatus,
   QuestionType,
   TeamMemberRole,
+  NotificationType,
 } from "../app/db/schema";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -65,6 +66,9 @@ async function seed() {
 
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
+    DROP TABLE IF EXISTS notification_preferences;
+    DROP TABLE IF EXISTS email_outbox;
+    DROP TABLE IF EXISTS notifications;
     DROP TABLE IF EXISTS comments;
     DROP TABLE IF EXISTS course_ratings;
     DROP TABLE IF EXISTS video_watch_events;
@@ -2810,6 +2814,139 @@ This course is still in draft while the cluster examples are rewritten against t
   }
 
   console.log(`Created ${watchEventRows.length} video watch events.`);
+
+  // ─── Sample Notifications ───
+
+  db.insert(schema.notifications)
+    .values([
+      // Admin: 2 unread refund requests
+      {
+        recipientUserId: admin.id,
+        type: NotificationType.RefundRequestRaised,
+        payload: JSON.stringify({
+          refundRequestId: 1,
+          purchaseId: liamPurchase.id,
+          courseId: course1.id,
+          courseTitle: course1.title,
+          courseSlug: course1.slug,
+          buyerName: liam.name,
+          amountPaid: liamPurchase.amountPaid,
+        }),
+        readAt: null,
+        createdAt: daysAgo(4),
+        dedupeKey: `refund-request-raised:1`,
+      },
+      {
+        recipientUserId: admin.id,
+        type: NotificationType.RefundRequestRaised,
+        payload: JSON.stringify({
+          refundRequestId: 2,
+          purchaseId: novakLicence.purchase.id,
+          courseId: course3.id,
+          courseTitle: course3.title,
+          courseSlug: course3.slug,
+          buyerName: "Marta Novak",
+          amountPaid: novakLicence.purchase.amountPaid,
+        }),
+        readAt: null,
+        createdAt: daysAgo(1),
+        dedupeKey: `refund-request-raised:2`,
+      },
+      // Emma (students[0]): mixed notifications
+      {
+        recipientUserId: students[0].id,
+        type: NotificationType.PurchaseConfirmed,
+        payload: JSON.stringify({
+          purchaseId: purchase1.id,
+          courseId: course1.id,
+          courseTitle: course1.title,
+          courseSlug: course1.slug,
+          amountPaid: purchase1.amountPaid,
+        }),
+        readAt: daysAgo(49),
+        createdAt: daysAgo(50),
+        dedupeKey: `purchase-confirmed:${purchase1.id}`,
+      },
+      {
+        recipientUserId: students[0].id,
+        type: NotificationType.RefundDecided,
+        payload: JSON.stringify({
+          refundRequestId: 99,
+          purchaseId: 2,
+          courseId: course2.id,
+          courseTitle: course2.title,
+          courseSlug: course2.slug,
+          decision: "approved",
+          decisionNote: "Approved per policy.",
+          amountRefunded: 5999,
+        }),
+        readAt: null,
+        createdAt: hoursAgo(2),
+        dedupeKey: `refund-decided:99`,
+      },
+      {
+        recipientUserId: students[0].id,
+        type: NotificationType.InstructorReply,
+        payload: JSON.stringify({
+          commentId: 2,
+          parentCommentId: c1q1.id,
+          lessonId: course1LessonIds[2],
+          lessonTitle: "Your First TypeScript Program",
+          courseId: course1.id,
+          courseTitle: course1.title,
+          courseSlug: course1.slug,
+          instructorName: instructor1.name,
+        }),
+        readAt: null,
+        createdAt: daysAgo(1),
+        dedupeKey: `instructor-reply:2`,
+      },
+      // Sarah Chen (instructor1)
+      {
+        recipientUserId: instructor1.id,
+        type: NotificationType.CoursePublished,
+        payload: JSON.stringify({
+          courseId: course1.id,
+          courseTitle: course1.title,
+          courseSlug: course1.slug,
+          publishedAt: daysAgo(355),
+        }),
+        readAt: daysAgo(300),
+        createdAt: daysAgo(355),
+        dedupeKey: `course-published:${course1.id}:1`,
+      },
+      {
+        recipientUserId: instructor1.id,
+        type: NotificationType.CoursePublished,
+        payload: JSON.stringify({
+          courseId: course3.id,
+          courseTitle: course3.title,
+          courseSlug: course3.slug,
+          publishedAt: daysAgo(14),
+        }),
+        readAt: null,
+        createdAt: daysAgo(14),
+        dedupeKey: `course-published:${course3.id}:1`,
+      },
+      // Liam
+      {
+        recipientUserId: liam.id,
+        type: NotificationType.PurchaseConfirmed,
+        payload: JSON.stringify({
+          purchaseId: liamPurchase.id,
+          courseId: course1.id,
+          courseTitle: course1.title,
+          courseSlug: course1.slug,
+          amountPaid: liamPurchase.amountPaid,
+        }),
+        readAt: daysAgo(8),
+        createdAt: daysAgo(9),
+        dedupeKey: `purchase-confirmed:${liamPurchase.id}`,
+      },
+    ])
+    .run();
+
+  console.log(`Created sample notifications for dev users.`);
 
   // ─── Summary ───
 

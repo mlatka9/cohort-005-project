@@ -5,6 +5,10 @@ import { DevUI } from "~/components/dev-ui";
 import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
+import {
+  getUnreadCount,
+  listRecentNotifications,
+} from "~/lib/notifications.server";
 import { eq, and, or, sql, desc } from "drizzle-orm";
 import { db } from "~/db";
 import {
@@ -198,6 +202,11 @@ export async function loader({ request }: Route.LoaderArgs) {
       })
     : [];
 
+  const unreadCount = currentUserId ? getUnreadCount(db, currentUserId) : 0;
+  const recentNotifications = currentUserId
+    ? listRecentNotifications(db, currentUserId, 6)
+    : [];
+
   return {
     users: users.map((u) => ({ id: u.id, name: u.name, role: u.role })),
     currentUser: currentUser
@@ -213,6 +222,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    unreadCount,
+    recentNotifications,
   };
 }
 
@@ -225,6 +236,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
+    unreadCount,
+    recentNotifications,
   } = loaderData;
 
   return (
@@ -233,6 +246,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        unreadCount={unreadCount}
+        recentNotifications={recentNotifications}
       />
       <main className="flex-1 overflow-y-auto">
         <Outlet />

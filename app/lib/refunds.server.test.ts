@@ -14,6 +14,8 @@ import {
   listTeamLicences,
   raiseRefundRequest,
 } from "./refunds.server";
+import { getUnreadCount, listRecentNotifications } from "./notifications.server";
+import { NotificationType } from "~/db/schema";
 
 type TestDb = ReturnType<typeof createTestDb>;
 
@@ -164,6 +166,22 @@ describe("raising a Refund Request", () => {
     const result = raiseRefundRequest(db, purchase.id, base.user.id, "Nope.", NOW);
 
     expect(result).toMatchObject({ ok: true, kind: "individual_purchase" });
+  });
+
+  it("notifies Platform Admins when a Refund Request is raised", () => {
+    const purchase = buyForSelf(base.user.id);
+
+    expect(getUnreadCount(db, platformAdmin.id)).toBe(0);
+
+    const result = raiseRefundRequest(db, purchase.id, base.user.id, "Please refund.", NOW);
+    if (!result.ok) throw new Error(result.error);
+
+    expect(getUnreadCount(db, platformAdmin.id)).toBe(1);
+    const recent = listRecentNotifications(db, platformAdmin.id);
+    expect(recent).toHaveLength(1);
+    expect(recent[0].type).toBe(NotificationType.RefundRequestRaised);
+    expect(recent[0].title).toBe('Refund request raised for "Test Course"');
+    expect(recent[0].deepLink).toBe("/admin/refunds");
   });
 
   it("refuses anyone but the buyer", () => {
@@ -367,6 +385,21 @@ describe("approving a Refund Request", () => {
     expect(result.email.subject).toBe("Refund approved — Test Course");
     expect(result.email.body).toContain("$79.00");
   });
+
+  it("notifies the buyer when a Refund Request is approved", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    const unreadBefore = getUnreadCount(db, base.user.id);
+    const result = approveRefundRequest(db, id, platformAdmin.id, "Sure thing.", NOW);
+    expect(result.ok).toBe(true);
+
+    expect(getUnreadCount(db, base.user.id)).toBe(unreadBefore + 1);
+    const recent = listRecentNotifications(db, base.user.id);
+    expect(recent[0].type).toBe(NotificationType.RefundDecided);
+    expect(recent[0].title).toBe('Your refund for "Test Course" was approved');
+    expect(recent[0].deepLink).toBe("/courses/test-course");
+  });
 });
 
 describe("declining a Refund Request", () => {
@@ -407,6 +440,27 @@ describe("declining a Refund Request", () => {
     declineRefundRequest(db, id, platformAdmin.id, "Seats are in use.", NOW);
 
     expect(getSeatAvailability(db, getSeat(seats[0].id))).toBe("available");
+  });
+
+  it("notifies the buyer when a Refund Request is declined", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    const unreadBefore = getUnreadCount(db, base.user.id);
+    const result = declineRefundRequest(
+      db,
+      id,
+      platformAdmin.id,
+      "Finished course.",
+      NOW
+    );
+    expect(result.ok).toBe(true);
+
+    expect(getUnreadCount(db, base.user.id)).toBe(unreadBefore + 1);
+    const recent = listRecentNotifications(db, base.user.id);
+    expect(recent[0].type).toBe(NotificationType.RefundDecided);
+    expect(recent[0].title).toBe('Your refund for "Test Course" was declined');
+    expect(recent[0].deepLink).toBe("/courses/test-course");
   });
 });
 

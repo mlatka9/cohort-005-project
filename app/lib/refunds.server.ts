@@ -15,7 +15,10 @@ import {
   videoWatchEvents,
   LessonProgressStatus,
   RefundStatus,
+  UserRole,
+  NotificationType,
 } from "~/db/schema";
+import { writeNotification } from "~/lib/notifications.server";
 import { formatPrice } from "~/lib/utils";
 import {
   REFUND_COMPLETION_LIMIT,
@@ -376,36 +379,61 @@ export function raiseRefundRequest(
     return { ok: false, status: 404, error: "Purchase not found." };
   }
 
-  const refundRequest = db
-    .insert(refunds)
-    .values({
-      purchaseId: purchase.id,
-      status: RefundStatus.Open,
-      reason,
-      requestedAt: now.toISOString(),
-    })
-    .returning()
-    .get();
+  return db.transaction((tx): RaiseResult => {
+    const refundRequest = tx
+      .insert(refunds)
+      .values({
+        purchaseId: purchase.id,
+        status: RefundStatus.Open,
+        reason,
+        requestedAt: now.toISOString(),
+      })
+      .returning()
+      .get();
 
-  return {
-    ok: true,
-    refundRequestId: refundRequest.id,
-    kind: kindOf(getSeats(db, purchase.id)),
-    email: {
-      to: buyer.email,
-      subject: `Refund requested — ${course.title}`,
-      body: [
-        `Hi ${buyer.name},`,
-        "",
-        `We have your refund request for "${course.title}".`,
-        `The refund is for ${formatPrice(purchase.amountPaid)}, the amount you paid.`,
-        "",
-        "Our team reviews every refund request by hand. You do not need to do anything else — we will email you again when it is done.",
-        "",
-        "— The Cadence team",
-      ].join("\n"),
-    },
-  };
+    const admins = tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.role, UserRole.Admin))
+      .all();
+
+    for (const admin of admins) {
+      writeNotification(tx, {
+        recipientUserId: admin.id,
+        type: NotificationType.RefundRequestRaised,
+        payload: {
+          refundRequestId: refundRequest.id,
+          purchaseId: purchase.id,
+          courseId: course.id,
+          courseTitle: course.title,
+          courseSlug: course.slug,
+          buyerName: buyer.name,
+          amountPaid: purchase.amountPaid,
+        },
+        dedupeKey: `refund-request-raised:${refundRequest.id}`,
+      });
+    }
+
+    return {
+      ok: true,
+      refundRequestId: refundRequest.id,
+      kind: kindOf(getSeats(tx, purchase.id)),
+      email: {
+        to: buyer.email,
+        subject: `Refund requested — ${course.title}`,
+        body: [
+          `Hi ${buyer.name},`,
+          "",
+          `We have your refund request for "${course.title}".`,
+          `The refund is for ${formatPrice(purchase.amountPaid)}, the amount you paid.`,
+          "",
+          "Our team reviews every refund request by hand. You do not need to do anything else — we will email you again when it is done.",
+          "",
+          "— The Cadence team",
+        ].join("\n"),
+      },
+    };
+  });
 }
 
 // ─── Listing Refund Requests ───
@@ -677,6 +705,28 @@ export function approveRefundRequest(
       .where(eq(refunds.id, refundRequestId))
       .run();
 
+    const course = tx
+      .select()
+      .from(courses)
+      .where(eq(courses.id, purchase.courseId))
+      .get();
+
+    writeNotification(tx, {
+      recipientUserId: purchase.userId,
+      type: NotificationType.RefundDecided,
+      payload: {
+        refundRequestId,
+        purchaseId: purchase.id,
+        courseId: purchase.courseId,
+        courseTitle: course?.title ?? "Course",
+        courseSlug: course?.slug ?? "",
+        decision: "approved",
+        decisionNote: note,
+        amountRefunded: purchase.amountPaid,
+      },
+      dedupeKey: `refund-decided:${refundRequestId}`,
+    });
+
     return {
       ok: true,
       email: buildDecisionEmail(tx, purchase, RefundStatus.Approved, note),
@@ -719,6 +769,27 @@ export function declineRefundRequest(
       })
       .where(eq(refunds.id, refundRequestId))
       .run();
+
+    const course = tx
+      .select()
+      .from(courses)
+      .where(eq(courses.id, found.purchase.courseId))
+      .get();
+
+    writeNotification(tx, {
+      recipientUserId: found.purchase.userId,
+      type: NotificationType.RefundDecided,
+      payload: {
+        refundRequestId,
+        purchaseId: found.purchase.id,
+        courseId: found.purchase.courseId,
+        courseTitle: course?.title ?? "Course",
+        courseSlug: course?.slug ?? "",
+        decision: "declined",
+        decisionNote: trimmedNote,
+      },
+      dedupeKey: `refund-decided:${refundRequestId}`,
+    });
 
     return {
       ok: true,

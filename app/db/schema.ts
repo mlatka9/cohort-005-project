@@ -42,6 +42,24 @@ export enum TeamMemberRole {
   Member = "member",
 }
 
+export enum NotificationType {
+  RefundRequestRaised = "refund_request_raised",
+  RefundDecided = "refund_decided",
+  PurchaseConfirmed = "purchase_confirmed",
+  EnrollmentEnded = "enrollment_ended",
+  CourseArchived = "course_archived",
+  TeamLicencePurchased = "team_licence_purchased",
+  SeatClaimed = "seat_claimed",
+  InstructorReply = "instructor_reply",
+  CoursePublished = "course_published",
+}
+
+export enum OutboxStatus {
+  Pending = "pending",
+  Sent = "sent",
+  Failed = "failed",
+}
+
 // ─── Tables ───
 
 export const users = sqliteTable("users", {
@@ -374,3 +392,82 @@ export const videoWatchEvents = sqliteTable("video_watch_events", {
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    recipientUserId: integer("recipient_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type").notNull().$type<NotificationType>(),
+    // Snapshot of event payload: target IDs for deep linking + display strings captured at event time
+    payload: text("payload").notNull(),
+    readAt: text("read_at"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    dedupeKey: text("dedupe_key"),
+  },
+  (table) => [
+    index("notifications_recipient_read_created_idx").on(
+      table.recipientUserId,
+      table.readAt,
+      table.createdAt
+    ),
+    uniqueIndex("notifications_recipient_dedupe_idx").on(
+      table.recipientUserId,
+      table.dedupeKey
+    ),
+  ]
+);
+
+export const emailOutbox = sqliteTable(
+  "email_outbox",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    notificationId: integer("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" })
+      .unique(),
+    status: text("status")
+      .notNull()
+      .$type<OutboxStatus>()
+      .default(OutboxStatus.Pending),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: text("next_attempt_at"),
+    lastError: text("last_error"),
+    sentAt: text("sent_at"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("email_outbox_status_next_attempt_idx").on(
+      table.status,
+      table.nextAttemptAt
+    ),
+  ]
+);
+
+export const notificationPreferences = sqliteTable(
+  "notification_preferences",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type").notNull().$type<NotificationType>(),
+    emailEnabled: integer("email_enabled", { mode: "boolean" }).notNull(),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    uniqueIndex("notification_preferences_user_type_idx").on(
+      table.userId,
+      table.type
+    ),
+  ]
+);
+
