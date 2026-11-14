@@ -1,5 +1,6 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import { db as defaultDb } from "~/db";
 import * as schema from "~/db/schema";
 import {
   emailOutbox,
@@ -360,7 +361,7 @@ export function writeNotification<T extends NotificationType>(
       })
       .run();
 
-    if (typeof queueMicrotask === "function") {
+    if (process.env.NODE_ENV !== "test" && typeof queueMicrotask === "function") {
       queueMicrotask(() => {
         triggerOutboxDrain().catch(() => {});
       });
@@ -490,4 +491,37 @@ export function markAllAsRead(
       )
     )
     .run();
+}
+
+export interface PurgeOldNotificationsOptions {
+  db?: Queryable;
+  now?: Date;
+}
+
+export function purgeOldNotifications({
+  db: queryDb,
+  now = new Date(),
+}: PurgeOldNotificationsOptions = {}): number {
+  const database = queryDb ?? defaultDb;
+  const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+  const cutoffIso = new Date(now.getTime() - NINETY_DAYS_MS).toISOString();
+
+  const pendingNotificationIds = database
+    .select({ notificationId: emailOutbox.notificationId })
+    .from(emailOutbox)
+    .where(eq(emailOutbox.status, OutboxStatus.Pending));
+
+  const deletedRows = database
+    .delete(notifications)
+    .where(
+      and(
+        isNotNull(notifications.readAt),
+        lt(notifications.readAt, cutoffIso),
+        notInArray(notifications.id, pendingNotificationIds)
+      )
+    )
+    .returning({ id: notifications.id })
+    .all();
+
+  return deletedRows.length;
 }

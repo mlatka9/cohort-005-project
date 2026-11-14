@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import {
   emailOutbox,
+  notifications,
   NotificationType,
   OutboxStatus,
   UserRole,
@@ -13,6 +14,8 @@ import {
   calculateBackoff,
   drainOutbox,
   MAX_ATTEMPTS,
+  triggerOutboxDrain,
+  purgeOldNotifications,
 } from "./outbox.server";
 import type { Email, MailTransport } from "./mailer.server";
 
@@ -280,6 +283,56 @@ describe("Outbox Drain and Backoff", () => {
       expect(res6).toEqual({ sent: 0, retried: 0, failed: 0 });
 
       consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe("triggerOutboxDrain periodic purge cycle", () => {
+    it("purges read notifications older than 90 days during drain cycle", async () => {
+      const fake = createFakeTransport();
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const ninetyOneDaysAgo = new Date(BASE_TIME.getTime() - 91 * DAY_MS);
+
+      const notifId = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 99,
+          purchaseId: 99,
+          courseId: 1,
+          courseTitle: "Purge Test Course",
+          courseSlug: "purge-test-course",
+          decision: "approved",
+        },
+      });
+
+      testDb
+        .update(notifications)
+        .set({
+          readAt: ninetyOneDaysAgo.toISOString(),
+          createdAt: ninetyOneDaysAgo.toISOString(),
+        })
+        .where(eq(notifications.id, notifId!))
+        .run();
+
+      testDb
+        .update(emailOutbox)
+        .set({ status: OutboxStatus.Sent, sentAt: ninetyOneDaysAgo.toISOString() })
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .run();
+
+      await triggerOutboxDrain({
+        db: testDb,
+        transport: fake.transport,
+        now: BASE_TIME,
+      });
+
+      const remaining = testDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, notifId!))
+        .all();
+
+      expect(remaining).toHaveLength(0);
     });
   });
 });

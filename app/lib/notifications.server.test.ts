@@ -18,6 +18,7 @@ import {
   listPaginatedNotifications,
   markAsRead,
   markAllAsRead,
+  purgeOldNotifications,
 } from "./notifications.server";
 
 describe("Notification Service", () => {
@@ -495,6 +496,205 @@ describe("Notification Service", () => {
         .where(eq(emailOutbox.notificationId, idSeatEnabled!))
         .all();
       expect(seatEnabledOutbox).toHaveLength(1);
+    });
+  });
+
+  describe("purgeOldNotifications", () => {
+    const NOW = new Date("2026-11-14T12:00:00.000Z");
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    it("deletes read notifications older than 90 days", () => {
+      const ninetyOneDaysAgo = new Date(NOW.getTime() - 91 * DAY_MS);
+      const notifId = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 1,
+          purchaseId: 1,
+          courseId: 1,
+          courseTitle: "Old Course",
+          courseSlug: "old-course",
+          decision: "approved",
+        },
+      });
+
+      testDb
+        .update(notifications)
+        .set({
+          readAt: ninetyOneDaysAgo.toISOString(),
+          createdAt: ninetyOneDaysAgo.toISOString(),
+        })
+        .where(eq(notifications.id, notifId!))
+        .run();
+
+      testDb
+        .update(emailOutbox)
+        .set({ status: OutboxStatus.Sent, sentAt: ninetyOneDaysAgo.toISOString() })
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .run();
+
+      const result = purgeOldNotifications({ db: testDb, now: NOW });
+      expect(result).toBe(1);
+
+      const remaining = testDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, notifId!))
+        .all();
+      expect(remaining).toHaveLength(0);
+    });
+
+    it("keeps read notifications newer than 90 days", () => {
+      const eightyNineDaysAgo = new Date(NOW.getTime() - 89 * DAY_MS);
+      const notifId = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 2,
+          purchaseId: 2,
+          courseId: 1,
+          courseTitle: "Recent Course",
+          courseSlug: "recent-course",
+          decision: "approved",
+        },
+      });
+
+      testDb
+        .update(notifications)
+        .set({
+          readAt: eightyNineDaysAgo.toISOString(),
+          createdAt: eightyNineDaysAgo.toISOString(),
+        })
+        .where(eq(notifications.id, notifId!))
+        .run();
+
+      const result = purgeOldNotifications({ db: testDb, now: NOW });
+      expect(result).toBe(0);
+
+      const remaining = testDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, notifId!))
+        .all();
+      expect(remaining).toHaveLength(1);
+    });
+
+    it("keeps unread notifications even if createdAt is older than 90 days", () => {
+      const hundredDaysAgo = new Date(NOW.getTime() - 100 * DAY_MS);
+      const notifId = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 3,
+          purchaseId: 3,
+          courseId: 1,
+          courseTitle: "Unread Old Course",
+          courseSlug: "unread-old-course",
+          decision: "approved",
+        },
+      });
+
+      testDb
+        .update(notifications)
+        .set({
+          readAt: null,
+          createdAt: hundredDaysAgo.toISOString(),
+        })
+        .where(eq(notifications.id, notifId!))
+        .run();
+
+      const result = purgeOldNotifications({ db: testDb, now: NOW });
+      expect(result).toBe(0);
+
+      const remaining = testDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, notifId!))
+        .all();
+      expect(remaining).toHaveLength(1);
+      expect(getUnreadCount(testDb, user.id)).toBe(1);
+    });
+
+    it("keeps notifications with a pending outbox row even if read > 90 days ago", () => {
+      const ninetyFiveDaysAgo = new Date(NOW.getTime() - 95 * DAY_MS);
+      const notifId = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 4,
+          purchaseId: 4,
+          courseId: 1,
+          courseTitle: "Pending Outbox Course",
+          courseSlug: "pending-outbox-course",
+          decision: "approved",
+        },
+      });
+
+      testDb
+        .update(notifications)
+        .set({
+          readAt: ninetyFiveDaysAgo.toISOString(),
+          createdAt: ninetyFiveDaysAgo.toISOString(),
+        })
+        .where(eq(notifications.id, notifId!))
+        .run();
+
+      testDb
+        .update(emailOutbox)
+        .set({ status: OutboxStatus.Pending })
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .run();
+
+      const result = purgeOldNotifications({ db: testDb, now: NOW });
+      expect(result).toBe(0);
+
+      const remaining = testDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, notifId!))
+        .all();
+      expect(remaining).toHaveLength(1);
+    });
+
+    it("deletes read notifications older than 90 days if outbox row is failed", () => {
+      const ninetyFiveDaysAgo = new Date(NOW.getTime() - 95 * DAY_MS);
+      const notifId = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.RefundDecided,
+        payload: {
+          refundRequestId: 5,
+          purchaseId: 5,
+          courseId: 1,
+          courseTitle: "Failed Outbox Course",
+          courseSlug: "failed-outbox-course",
+          decision: "approved",
+        },
+      });
+
+      testDb
+        .update(notifications)
+        .set({
+          readAt: ninetyFiveDaysAgo.toISOString(),
+          createdAt: ninetyFiveDaysAgo.toISOString(),
+        })
+        .where(eq(notifications.id, notifId!))
+        .run();
+
+      testDb
+        .update(emailOutbox)
+        .set({ status: OutboxStatus.Failed })
+        .where(eq(emailOutbox.notificationId, notifId!))
+        .run();
+
+      const result = purgeOldNotifications({ db: testDb, now: NOW });
+      expect(result).toBe(1);
+
+      const remaining = testDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, notifId!))
+        .all();
+      expect(remaining).toHaveLength(0);
     });
   });
 });
