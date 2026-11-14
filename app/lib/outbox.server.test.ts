@@ -133,6 +133,89 @@ describe("Outbox Drain and Backoff", () => {
       });
     });
 
+    it("drains course archived email to instructor", async () => {
+      const fake = createFakeTransport();
+
+      const notifId = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.CourseArchived,
+        payload: {
+          courseId: 10,
+          courseTitle: "Fullstack React",
+          courseSlug: "fullstack-react",
+          archivedAt: BASE_TIME.toISOString(),
+        },
+      });
+
+      expect(notifId).toBeTypeOf("number");
+
+      const result = await drainOutbox({
+        db: testDb,
+        transport: fake.transport,
+        now: BASE_TIME,
+      });
+
+      expect(result).toEqual({ sent: 1, retried: 0, failed: 0 });
+      expect(fake.sentEmails).toHaveLength(1);
+      expect(fake.sentEmails[0]).toMatchObject({
+        to: user.email,
+        subject: "Course archived — Fullstack React",
+      });
+      expect(fake.sentEmails[0].body).toContain(
+        'Your course "Fullstack React" was archived by an admin.'
+      );
+    });
+
+    it("drains course published email to instructor when opted in", async () => {
+      const fake = createFakeTransport();
+
+      const notifId = writeNotification(testDb, {
+        recipientUserId: user.id,
+        type: NotificationType.CoursePublished,
+        payload: {
+          courseId: 10,
+          courseTitle: "Fullstack React",
+          courseSlug: "fullstack-react",
+          publishedAt: BASE_TIME.toISOString(),
+        },
+      });
+
+      // CoursePublished default email is false, so outbox row is null initially
+      expect(
+        testDb
+          .select()
+          .from(emailOutbox)
+          .where(eq(emailOutbox.notificationId, notifId!))
+          .all()
+      ).toHaveLength(0);
+
+      // Explicitly insert outbox row as if opted in
+      testDb
+        .insert(emailOutbox)
+        .values({
+          notificationId: notifId!,
+          status: OutboxStatus.Pending,
+          attempts: 0,
+        })
+        .run();
+
+      const result = await drainOutbox({
+        db: testDb,
+        transport: fake.transport,
+        now: BASE_TIME,
+      });
+
+      expect(result).toEqual({ sent: 1, retried: 0, failed: 0 });
+      expect(fake.sentEmails).toHaveLength(1);
+      expect(fake.sentEmails[0]).toMatchObject({
+        to: user.email,
+        subject: "Course published — Fullstack React",
+      });
+      expect(fake.sentEmails[0].body).toContain(
+        'Your course "Fullstack React" has been published and is now live.'
+      );
+    });
+
     it("ignores pending rows whose nextAttemptAt is in the future", async () => {
       const fake = createFakeTransport();
 
