@@ -36,6 +36,7 @@ import { UserAvatar } from "~/components/user-avatar";
 import { data } from "react-router";
 import { formatDuration, formatPrice } from "~/lib/utils";
 import { resolveCountry } from "~/lib/country.server";
+import { completeIndividualPurchase } from "~/lib/enrollments";
 import { calculatePppPrice, getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { parseFormData, parseParams } from "~/lib/validation";
 
@@ -140,41 +141,6 @@ function getEnrollmentCountForCourse(courseId: number) {
     .get();
 
   return result?.count ?? 0;
-}
-
-function enrollUser(
-  userId: number,
-  courseId: number,
-  sendEmail: boolean,
-  skipValidation: boolean
-) {
-  if (!skipValidation) {
-    const existing = findEnrollment(userId, courseId);
-    if (existing) {
-      throw new Error("User is already enrolled in this course");
-    }
-
-    const course = db
-      .select()
-      .from(courses)
-      .where(eq(courses.id, courseId))
-      .get();
-    if (!course) {
-      throw new Error("Course not found");
-    }
-  }
-
-  const enrollment = db
-    .insert(enrollments)
-    .values({ userId, courseId })
-    .returning()
-    .get();
-
-  if (sendEmail) {
-    // Would send welcome email here
-  }
-
-  return enrollment;
 }
 
 function createPurchase(
@@ -367,8 +333,12 @@ export async function action({ params, request }: Route.ActionArgs) {
     if (isUserEnrolled(currentUserId, course.id)) {
       throw redirect(`/courses/${slug}`);
     }
-    createPurchase(currentUserId, course.id, pppPrice, country);
-    enrollUser(currentUserId, course.id, false, false);
+    completeIndividualPurchase(db, {
+      userId: currentUserId,
+      courseId: course.id,
+      amountPaid: pppPrice,
+      country,
+    });
     throw redirect(`/courses/${slug}/welcome`);
   }
 

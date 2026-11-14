@@ -14,8 +14,8 @@ import {
   listTeamLicences,
   raiseRefundRequest,
 } from "./refunds.server";
-import { getUnreadCount, listRecentNotifications } from "./notifications.server";
-import { NotificationType, emailOutbox, OutboxStatus } from "~/db/schema";
+import { getUnreadCount, listRecentNotifications, writeNotification } from "./notifications.server";
+import { NotificationType, emailOutbox, notifications, OutboxStatus } from "~/db/schema";
 import { drainOutbox } from "./outbox.server";
 import type { Email, MailTransport } from "./mailer.server";
 
@@ -408,14 +408,43 @@ describe("approving a Refund Request", () => {
     const result = approveRefundRequest(db, id, platformAdmin.id, "Sure thing.", NOW);
     expect(result.ok).toBe(true);
 
-    expect(getUnreadCount(db, base.user.id)).toBe(unreadBefore + 1);
+    expect(getUnreadCount(db, base.user.id)).toBe(unreadBefore + 2);
     const recent = listRecentNotifications(db, base.user.id);
     expect(recent[0].type).toBe(NotificationType.RefundDecided);
     expect(recent[0].title).toBe('Your refund for "Test Course" was approved');
     expect(recent[0].deepLink).toBe("/courses/test-course");
+    expect(recent[1].type).toBe(NotificationType.EnrollmentEnded);
+    expect(recent[1].title).toBe('Your enrollment in "Test Course" has ended');
+    expect(recent[1].deepLink).toBe("/courses/test-course");
   });
 
-  it("creates an email_outbox row for the buyer when approved and drains it", async () => {
+  it("notifies the student their enrollment ended and creates pending outbox row when refund is approved", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    const result = approveRefundRequest(db, id, platformAdmin.id, "Sure thing.", NOW);
+    expect(result.ok).toBe(true);
+
+    const recent = listRecentNotifications(db, base.user.id);
+    const enrollmentEndedNotif = recent.find(
+      (n) => n.type === NotificationType.EnrollmentEnded
+    );
+    expect(enrollmentEndedNotif).toBeDefined();
+    expect(enrollmentEndedNotif?.title).toBe('Your enrollment in "Test Course" has ended');
+    expect(enrollmentEndedNotif?.deepLink).toBe("/courses/test-course");
+    expect(enrollmentEndedNotif?.mandatory).toBe(true);
+    expect(enrollmentEndedNotif?.read).toBe(false);
+
+    const outboxRow = db
+      .select()
+      .from(emailOutbox)
+      .where(eq(emailOutbox.notificationId, enrollmentEndedNotif!.id))
+      .get();
+    expect(outboxRow).toBeDefined();
+    expect(outboxRow?.status).toBe(OutboxStatus.Pending);
+  });
+
+  it("creates email_outbox rows for the buyer when approved and drains them", async () => {
     const purchase = buyForSelf(base.user.id);
     const id = raise(purchase.id, base.user.id);
 
@@ -424,9 +453,9 @@ describe("approving a Refund Request", () => {
     expect(result.ok).toBe(true);
 
     const outboxAfter = db.select().from(emailOutbox).all();
-    expect(outboxAfter.length).toBe(outboxBefore + 1);
-    const buyerOutbox = outboxAfter[outboxAfter.length - 1];
-    expect(buyerOutbox.status).toBe(OutboxStatus.Pending);
+    expect(outboxAfter.length).toBe(outboxBefore + 2);
+    const newOutboxRows = outboxAfter.slice(-2);
+    expect(newOutboxRows.every((r) => r.status === OutboxStatus.Pending)).toBe(true);
 
     const sentEmails: Email[] = [];
     const fakeTransport: MailTransport = {
@@ -440,13 +469,43 @@ describe("approving a Refund Request", () => {
       transport: fakeTransport,
       now: NOW,
     });
-    expect(drainResult.sent).toBeGreaterThanOrEqual(1);
+    expect(drainResult.sent).toBeGreaterThanOrEqual(2);
 
-    const buyerEmail = sentEmails.find((e) => e.to === base.user.email);
-    expect(buyerEmail).toBeDefined();
-    expect(buyerEmail?.subject).toBe("Refund approved — Test Course");
-    expect(buyerEmail?.body).toContain("We have approved your refund request");
-    expect(buyerEmail?.body).toContain("Approved note.");
+    const buyerRefundEmail = sentEmails.find((e) => e.subject === "Refund approved — Test Course");
+    expect(buyerRefundEmail).toBeDefined();
+    expect(buyerRefundEmail?.body).toContain("We have approved your refund request");
+    expect(buyerRefundEmail?.body).toContain("Approved note.");
+
+    const buyerEnrollmentEndedEmail = sentEmails.find((e) => e.subject === "Enrollment ended — Test Course");
+    expect(buyerEnrollmentEndedEmail).toBeDefined();
+    expect(buyerEnrollmentEndedEmail?.body).toContain('Your enrollment in "Test Course" has ended because your refund was approved.');
+  });
+
+  it("prevents duplicate enrollment_ended notification with dedupe key", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    approveRefundRequest(db, id, platformAdmin.id, null, NOW);
+
+    const notifCountBefore = db.select().from(notifications).all().length;
+    const outboxCountBefore = db.select().from(emailOutbox).all().length;
+
+    // Duplicate notification attempt with same dedupe key
+    const duplicateNotifId = writeNotification(db, {
+      recipientUserId: base.user.id,
+      type: NotificationType.EnrollmentEnded,
+      payload: {
+        purchaseId: purchase.id,
+        courseId: base.course.id,
+        courseTitle: base.course.title,
+        courseSlug: base.course.slug,
+      },
+      dedupeKey: `enrollment-ended:${id}`,
+    });
+
+    expect(duplicateNotifId).toBeNull();
+    expect(db.select().from(notifications).all().length).toBe(notifCountBefore);
+    expect(db.select().from(emailOutbox).all().length).toBe(outboxCountBefore);
   });
 });
 
